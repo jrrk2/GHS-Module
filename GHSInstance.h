@@ -63,8 +63,6 @@ public:
     void Preview( UInt16Image& );
     void TransformHistogram( Histogram& , const Histogram& );
 
-private:
-
     //-------------------------------------------------------
     
     void Transform( double& value ) const
@@ -211,7 +209,8 @@ private:
     }
     
     //-------------------------------------------------------
-    
+
+public:  
     struct Flags
     {
         bool GHSType = false;
