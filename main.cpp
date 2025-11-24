@@ -221,7 +221,8 @@ bool ProcessImage(const pcl::String& inputPath, const pcl::String& outputPath,
         
         pcl::GHSInstance instance(process);
         instance.Assign(sourceInstance);
-        
+        ParameterSetter::SetParameters(instance, process);
+	
         // Display transformation info
         pcl::GHSInstance::Flags flags = instance.TransformationFlags();
         std::cout << "Transformation type: ";
@@ -419,7 +420,7 @@ int main(int argc, char *argv[])
                 ParameterSetter::SetParameters(sourceInstance, process);
                 pcl::GHSInstance instance(process);
                 instance.Assign(sourceInstance);
-                
+                ParameterSetter::SetParameters(instance, process);
                 for (double x = 0.0; x <= 1.0; x += 0.2) {
                     double y = x;
                     instance.Transform(y);

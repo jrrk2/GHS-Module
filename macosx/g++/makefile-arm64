@@ -67,7 +67,7 @@ DEP_FILES= \
 -include $(DEP_FILES)
 
 $(OBJ_DIR)/GHS: $(OBJ_FILES)
-	clang++ -g -O0 -arch arm64 -fPIC -headerpad_max_install_names -Wl,-syslibroot,/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mmacosx-version-min=12 -stdlib=libc++ -Wl,-dead_strip -L"$(PCLLIBDIR64)" -o $@ $(OBJ_FILES) -framework AppKit -lpthread -lPCL-pxi -L$(PCLSRCDIR)/modules/file-formats/XISF/macosx/g++/arm64/Release -lXISF-pxm -L$(PCLSRCDIR)/modules/file-formats/FITS/macosx/g++/arm64/Release  -lFITS-pxm -lz -L/opt/homebrew/lib -lfftw3 -lfftw3_threads -lRFC6234-pxi -lzstd -llz4 -llcms2 # -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
+	clang++ -g -O0 -arch arm64 -fsanitize=address -fPIC -headerpad_max_install_names -Wl,-syslibroot,/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mmacosx-version-min=12 -stdlib=libc++ -Wl,-dead_strip -L"$(PCLLIBDIR64)" -o $@ $(OBJ_FILES) -framework AppKit -lpthread -lPCL-pxi -L$(PCLSRCDIR)/modules/file-formats/XISF/macosx/g++/arm64/Release -lXISF-pxm -L$(PCLSRCDIR)/modules/file-formats/FITS/macosx/g++/arm64/Release  -lFITS-pxm -lz -L/opt/homebrew/lib -lfftw3 -lfftw3_threads -lRFC6234-pxi -lzstd -llz4 -llcms2 # -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
 
 .PHONY: clean
 clean:
@@ -83,5 +83,5 @@ post-build:
 
 # Make sure the directory exists before compiling
 ./arm64/Release/%.o: ../../%.cpp | ./arm64/Release
-	clang++ -g -O0 -c -pipe -pthread -arch arm64 -fPIC -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mmacosx-version-min=12 -D_REENTRANT -D__PCL_MACOSX  -D__PCL_NO_PERFORMANCE_CRITICAL_MATH_ROUTINES -I"$(PCLINCDIR)" -I"$(PCLSRCDIR)/3rdparty" -I"$(PCLSRCDIR)/modules/file-formats" -I/opt/homebrew/include -ffunction-sections -fdata-sections -ffast-math -fvisibility=hidden -fvisibility-inlines-hidden -std=c++17 -stdlib=libc++ -Wall -Wno-parentheses -Wno-extern-c-compat -MMD -MP -MF"$(@:%.o=%.d)" -o"$@" "$<"
+	clang++ -g -O0 -c -pipe -pthread -arch arm64 -fno-omit-frame-pointer -fsanitize=address -fsanitize-address-use-after-scope -fPIC -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mmacosx-version-min=12 -D_REENTRANT -D__PCL_MACOSX  -D__PCL_NO_PERFORMANCE_CRITICAL_MATH_ROUTINES -I"$(PCLINCDIR)" -I"$(PCLSRCDIR)/3rdparty" -I"$(PCLSRCDIR)/modules/file-formats" -I/opt/homebrew/include -ffunction-sections -fdata-sections -ffast-math -fvisibility=hidden -fvisibility-inlines-hidden -std=c++17 -stdlib=libc++ -Wall -Wno-parentheses -Wno-extern-c-compat -MMD -MP -MF"$(@:%.o=%.d)" -o"$@" "$<"
 	@echo ' '
