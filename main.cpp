@@ -17,8 +17,6 @@
 #include <iostream>
 #include <memory>
 
-extern "C" void SetModuleHandle(void *);
-
 // Helper class to set parameters through LockParameter interface
 class ParameterSetter
 {
@@ -139,7 +137,7 @@ public:
 bool ProcessImage(const pcl::String& inputPath, const pcl::String& outputPath,
                  int stretchType, double D, double b, double SP)
 {
-    try {
+  //    try {
         std::cout << "\n=== Processing Image ===" << std::endl;
         std::cout << "Input:  " << inputPath.c_str() << std::endl;
         std::cout << "Output: " << outputPath.c_str() << std::endl;
@@ -276,7 +274,7 @@ bool ProcessImage(const pcl::String& inputPath, const pcl::String& outputPath,
         
         std::cout << "Image saved successfully!" << std::endl;
         return true;
-        
+	/*       
     } catch (const pcl::Exception& e) {
         std::cerr << "PCL EXCEPTION during image processing: " << e.Message().c_str() << std::endl;
         return false;
@@ -287,6 +285,7 @@ bool ProcessImage(const pcl::String& inputPath, const pcl::String& outputPath,
         std::cerr << "UNKNOWN EXCEPTION during image processing" << std::endl;
         return false;
     }
+	*/
 }
 
 void PrintUsage()
@@ -310,7 +309,8 @@ void PrintUsage()
 
 int main(int argc, char *argv[])
 {
-    try {
+  SetDebugLogging(true);
+  //    try {
         std::cout << "=== GHS Image Processing Tool ===" << std::endl;
         
         // Set module handle
@@ -451,6 +451,7 @@ int main(int argc, char *argv[])
         
         return 0;
         
+	/*
     } catch (const pcl::Exception& e) {
         std::cerr << "PCL EXCEPTION: " << e.Message().c_str() << std::endl;
         return 1;
@@ -461,4 +462,5 @@ int main(int argc, char *argv[])
         std::cerr << "UNKNOWN EXCEPTION caught" << std::endl;
         return 1;
     }
+	*/
 }

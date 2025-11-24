@@ -102,12 +102,6 @@ void RegisterFileFormatFunctions();
  * Register SharedImage API functions with the mock API
  */
 void RegisterSharedImageFunctions();
- 
-/**
- * Enable or disable debug logging
- * @param enabled True to enable logging, false to disable
- */
-void SetDebugLogging(bool enabled);
 
 /**
  * Set the log file for debug output
@@ -116,5 +110,10 @@ void SetDebugLogging(bool enabled);
 void SetLogFile(const std::string& filename);
 
 } // namespace pcl_mock
+
+extern "C" {
+  void SetDebugLogging(bool);
+  void SetModuleHandle(void *);
+};
 
 #endif // PCL_MOCK_API_H

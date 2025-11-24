@@ -644,7 +644,7 @@ void* GetConsole() {
 }
 
 // Mock for LastError
-int LastError() {
+uint32 API_Global_LastError() {
     LogDebug("LastError called, returning: " + std::to_string(g_last_error));
     return g_last_error;
 }
@@ -814,6 +814,8 @@ api_bool API_Global_Deallocate(void* ptr) {
   
 // Structure for file format capabilities
 struct MockFormatCapabilities {
+    std::string name;          // ADD THIS - format name like "XISF", "FITS"
+    std::string extension;     // ADD THIS - extension like ".xisf", ".fits"
     bool canRead;
     bool canWrite;
     bool canReadMultipleImages;
@@ -827,79 +829,67 @@ struct MockFormatCapabilities {
     bool canStoreRGBColor;
 };
 
-// Map of supported formats
+// Map of supported formats - UPDATE WITH NAME AND EXTENSION
 static std::map<std::string, MockFormatCapabilities> g_format_capabilities = {
-    {".fits", {true, true, true, true, true, true, true, true, true, true, true}},
-    {".fit", {true, true, true, true, true, true, true, true, true, true, true}},
-    {".fts", {true, true, true, true, true, true, true, true, true, true, true}},
-    {".xisf", {true, true, true, true, true, true, true, true, true, true, true}},
-};
+    {".fits", {"FITS", ".fits", true, true, true, true, true, true, true, true, true, true, true}},
+    {".fit",  {"FITS", ".fit",  true, true, true, true, true, true, true, true, true, true, true}},
+    {".fts",  {"FITS", ".fts",  true, true, true, true, true, true, true, true, true, true, true}},
+    {".xisf", {"XISF", ".xisf", true, true, true, true, true, true, true, true, true, true, true}},
+};  
 
-meta_format_handle GetFileFormatByFileExtension(api_handle handle, const char16_type* filename, api_bool toRead, api_bool toWrite) {
+meta_format_handle API_FileFormat_GetFileFormatByFileExtension(api_handle handle, const char16_type* filename, api_bool toRead, api_bool toWrite) {
     if (!filename) {
         return nullptr;
     }
     
-    // Convert the full filename to UTF-8
     std::string filenameUtf8 = Utf16ToUtf8(filename);
     LogDebug("GetFileFormatByFileExtension called with filename: " + filenameUtf8);
     
-    // Extract just the extension from the filename
     std::string extension = GetFileExtension(filenameUtf8);
     if (extension.empty()) {
         return nullptr;
     }
     
-    // Convert to lowercase
     std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
     
-    // Look up in our supported formats map
     auto it = g_format_capabilities.find(extension);
     if (it != g_format_capabilities.end()) {
-        // Check if it meets read/write requirements
         if ((toRead && !it->second.canRead) || (toWrite && !it->second.canWrite)) {
             return nullptr;
         }
         
-        // Return a non-null pointer to represent the format
-        // Using the string as the actual handle
-	char *rslt = strdup(extension.c_str());
-	puts(rslt);
-	return rslt;
+        // FIXED: Return pointer to the struct, not a strdup'd string
+        return reinterpret_cast<meta_format_handle>(
+            const_cast<MockFormatCapabilities*>(&(it->second))
+        );
     }
     
     return nullptr;
-}  
+}
 
-// Get file format capabilities
-api_bool GetFileFormatCapabilities(meta_format_handle handle, api_format_capabilities* capabilities) {
+api_bool API_FileFormat_GetFileFormatCapabilities(meta_format_handle handle, api_format_capabilities* capabilities) {
     if (!handle || !capabilities) {
         return api_false;
     }
     
-    std::string extension = (const char*)handle;
-    LogDebug("GetFileFormatCapabilities called for: " + extension);
+    // FIXED: Cast to MockFormatCapabilities, not string
+    const MockFormatCapabilities* caps = static_cast<const MockFormatCapabilities*>(handle);
     
-    // Look up in our map
-    auto it = g_format_capabilities.find(extension);
-    if (it == g_format_capabilities.end()) {
-        return api_false;
-    }
+    LogDebug("GetFileFormatCapabilities called for: " + caps->extension);
     
-    // Fill in capabilities
-    capabilities->canRead = it->second.canRead ? api_true : api_false;
-    capabilities->canWrite = it->second.canWrite ? api_true : api_false;
-    capabilities->canStore8bit = it->second.canStore8Bit ? api_true : api_false;
-    capabilities->canStore16bit = it->second.canStore16Bit ? api_true : api_false;
-    capabilities->canStore32bit = it->second.canStore32Bit ? api_true : api_false;
-    capabilities->canStore64bit = it->second.canStore64Bit ? api_true : api_false;
-    capabilities->canStoreFloat = it->second.canStoreFloat ? api_true : api_false;
-    capabilities->canStoreDouble = it->second.canStoreDouble ? api_true : api_false;
-    capabilities->canStoreRGBColor = it->second.canStoreRGBColor ? api_true : api_false;
-    capabilities->supportsMultipleImages = it->second.canReadMultipleImages ? api_true : api_false;
+    capabilities->canRead = caps->canRead ? api_true : api_false;
+    capabilities->canWrite = caps->canWrite ? api_true : api_false;
+    capabilities->canStore8bit = caps->canStore8Bit ? api_true : api_false;
+    capabilities->canStore16bit = caps->canStore16Bit ? api_true : api_false;
+    capabilities->canStore32bit = caps->canStore32Bit ? api_true : api_false;
+    capabilities->canStore64bit = caps->canStore64Bit ? api_true : api_false;
+    capabilities->canStoreFloat = caps->canStoreFloat ? api_true : api_false;
+    capabilities->canStoreDouble = caps->canStoreDouble ? api_true : api_false;
+    capabilities->canStoreRGBColor = caps->canStoreRGBColor ? api_true : api_false;
+    capabilities->supportsMultipleImages = caps->canReadMultipleImages ? api_true : api_false;
     
     return api_true;
-}
+}  
 
 // Update API_FileFormat_OpenImageFileEx to handle XISF files
 api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_type *filePath, 
@@ -1160,7 +1150,6 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
     return api_true;
 }
 
-// Update the API_FileFormat_ReadImage function to handle XISF files
 api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image) {
     if (!handle || !image) {
         LogDebug("ReadImage: Invalid handle or image");
@@ -1169,7 +1158,6 @@ api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image)
     
     LogDebug("ReadImage: Starting image read operation");
     
-    // Get the file instance
     std::lock_guard<std::mutex> lock(g_file_instances_mutex);
     auto it = g_file_instances.find(handle);
     if (it == g_file_instances.end() || 
@@ -1179,40 +1167,22 @@ api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image)
     }
     
     MockFileInstance* instance = it->second;
-    
-    // Check if this is a FITS or XISF file
-    bool isFITS = (instance->extension == ".fits" || 
-                   instance->extension == ".fit" || 
-                   instance->extension == ".fts");
-    bool isXISF = (instance->extension == ".xisf");
-    
-    // Get the target image
-    std::lock_guard<std::mutex> img_lock(g_image_map_mutex);
-    auto img_it = g_image_map.find(image);
-    if (img_it == g_image_map.end()) {
-        LogDebug("ReadImage: Target image not found");
-        return api_false;
-    }
-    
-    MockImage* dstImg = img_it->second;
+    bool isXISF = (instance->extension == "XISF");
     
     // Handle XISF files
     if (isXISF && !instance->path.empty()) {
         LogDebug("ReadImage: Using XISF reader for: " + instance->path);
         
         try {
-            // Create an XISFReader
             pcl::XISFReader xisfReader;
-            
-            // Set up options if needed
             pcl::XISFOptions xisfOptions;
-            xisfOptions.verbosity = 2; // More verbose logging
+            xisfOptions.verbosity = 2;
             xisfReader.SetOptions(xisfOptions);
             
-            // Open the XISF file
-            xisfReader.Open(pcl::String(instance->path.c_str()));
+            // Keep the path string alive
+            std::string filePath = instance->path;
+            xisfReader.Open(pcl::String(filePath.c_str()));
             
-            // Select the image
             if (instance->selectedImage < xisfReader.NumberOfImages()) {
                 xisfReader.SelectImage(instance->selectedImage);
             } else {
@@ -1221,7 +1191,6 @@ api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image)
                 return api_false;
             }
             
-            // Get image info
             pcl::ImageInfo imgInfo = xisfReader.ImageInfo();
             pcl::ImageOptions imgOptions = xisfReader.ImageOptions();
             
@@ -1230,167 +1199,114 @@ api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image)
                      std::to_string(imgInfo.height) + ", " +
                      std::to_string(imgInfo.numberOfChannels) + " channels");
             
-            // Update our mock image dimensions
-            dstImg->width = imgInfo.width;
-            dstImg->height = imgInfo.height;
-            dstImg->channels = imgInfo.numberOfChannels;
-            dstImg->colorSpace = imgInfo.colorSpace;
-            dstImg->bitsPerSample = imgOptions.bitsPerSample;
-            dstImg->isFloat = imgOptions.ieeefpSampleFormat;
-            
-            // Reallocate pixel data if needed
-            if (dstImg->pixelData) {
-                for (uint32_t i = 0; i < dstImg->channels; i++) {
-                    if (dstImg->pixelData[i]) {
-		      //                        free(dstImg->pixelData[i]);
-                    }
-                }
-                delete[] dstImg->pixelData;
+            // Get the MockImage
+            std::lock_guard<std::mutex> img_lock(g_image_map_mutex);
+            auto img_it = g_image_map.find(image);
+            if (img_it == g_image_map.end()) {
+                xisfReader.Close();
+                return api_false;
             }
             
-            dstImg->pixelData = new void*[dstImg->channels];
+            MockImage* mockImg = img_it->second;
+
+	    // Check if we need to reallocate pixelData array for different channel count
+	    if (mockImg->channels != imgInfo.numberOfChannels) {
+		LogDebug("ReadImage: Reallocating pixelData array from " + 
+			 std::to_string(mockImg->channels) + " to " + 
+			 std::to_string(imgInfo.numberOfChannels) + " channels");
+
+		if (mockImg->pixelData) {
+		    delete[] mockImg->pixelData;
+		}
+		mockImg->pixelData = new void*[imgInfo.numberOfChannels];
+		for (uint32_t c = 0; c < imgInfo.numberOfChannels; c++) {
+		    mockImg->pixelData[c] = nullptr;
+		}
+	    }
+	    
+            // Update metadata
+            mockImg->width = imgInfo.width;
+            mockImg->height = imgInfo.height;
+            mockImg->channels = imgInfo.numberOfChannels;
+            mockImg->colorSpace = imgInfo.colorSpace;
+            mockImg->bitsPerSample = imgOptions.bitsPerSample;
+            mockImg->isFloat = imgOptions.ieeefpSampleFormat;
             
-            // Read the image based on its format
-            if (dstImg->isFloat) {
-                if (dstImg->bitsPerSample == 64) {
-                    // Double precision floating point
-                    pcl::DImage dImage;
-                    xisfReader.ReadImage(dImage);
+            // Allocate pixelData array
+            if (!mockImg->pixelData) {
+                mockImg->pixelData = new void*[mockImg->channels];
+                for (uint32_t c = 0; c < mockImg->channels; c++) {
+                    mockImg->pixelData[c] = nullptr;
+                }
+            }
+            
+            // Read into a REAL PCL image based on format
+            if (imgOptions.ieeefpSampleFormat) {
+                if (imgOptions.bitsPerSample == 64) {
+                    pcl::DImage tempImage;
+                    xisfReader.ReadImage(tempImage);
                     
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        dstImg->pixelData[c] = malloc(dstImg->width * dstImg->height * sizeof(double));
-                        const double* srcPixels = dImage.PixelData(c);
-                        double* dstPixels = (double*)dstImg->pixelData[c];
-                        memcpy(dstPixels, srcPixels, dstImg->width * dstImg->height * sizeof(double));
-                    }
-                    
-                    // Update stats
-                    if (dstImg->stats) {
-                        delete[] dstImg->stats;
-                    }
-                    dstImg->stats = new double[dstImg->channels * 2];
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        double min, max;
-                        dImage.GetExtremePixelValues(min, max, c);
-                        dstImg->stats[c*2] = min;
-                        dstImg->stats[c*2+1] = max;
+                    // Copy data to MockImage
+                    for (uint32_t c = 0; c < mockImg->channels; c++) {
+                        size_t size = mockImg->width * mockImg->height * sizeof(double);
+                        mockImg->pixelData[c] = malloc(size);
+                        memcpy(mockImg->pixelData[c], tempImage.PixelData(c), size);
                     }
                 } else {
-                    // Single precision floating point
-                    pcl::FImage fImage;
-                    xisfReader.ReadImage(fImage);
+                    pcl::FImage tempImage;
+                    xisfReader.ReadImage(tempImage);
                     
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        dstImg->pixelData[c] = malloc(dstImg->width * dstImg->height * sizeof(float));
-                        const float* srcPixels = fImage.PixelData(c);
-                        float* dstPixels = (float*)dstImg->pixelData[c];
-                        memcpy(dstPixels, srcPixels, dstImg->width * dstImg->height * sizeof(float));
-                    }
-                    
-                    // Update stats
-                    if (dstImg->stats) {
-                        delete[] dstImg->stats;
-                    }
-                    dstImg->stats = new double[dstImg->channels * 2];
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        float min, max;
-                        fImage.GetExtremePixelValues(min, max, c);
-                        dstImg->stats[c*2] = min;
-                        dstImg->stats[c*2+1] = max;
+                    // Copy data to MockImage
+                    for (uint32_t c = 0; c < mockImg->channels; c++) {
+                        size_t size = mockImg->width * mockImg->height * sizeof(float);
+                        mockImg->pixelData[c] = malloc(size);
+                        memcpy(mockImg->pixelData[c], tempImage.PixelData(c), size);
                     }
                 }
             } else {
-                // Integer data types
-                if (dstImg->bitsPerSample <= 8) {
-                    pcl::UInt8Image ui8Image;
-                    xisfReader.ReadImage(ui8Image);
+                if (imgOptions.bitsPerSample <= 8) {
+                    pcl::UInt8Image tempImage;
+                    xisfReader.ReadImage(tempImage);
                     
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        dstImg->pixelData[c] = malloc(dstImg->width * dstImg->height * sizeof(uint8_t));
-                        const uint8_t* srcPixels = ui8Image.PixelData(c);
-                        uint8_t* dstPixels = (uint8_t*)dstImg->pixelData[c];
-                        memcpy(dstPixels, srcPixels, dstImg->width * dstImg->height * sizeof(uint8_t));
+                    for (uint32_t c = 0; c < mockImg->channels; c++) {
+                        size_t size = mockImg->width * mockImg->height * sizeof(uint8_t);
+                        mockImg->pixelData[c] = malloc(size);
+                        memcpy(mockImg->pixelData[c], tempImage.PixelData(c), size);
                     }
+                } else if (imgOptions.bitsPerSample <= 16) {
+                    pcl::UInt16Image tempImage;
+                    xisfReader.ReadImage(tempImage);
                     
-                    if (dstImg->stats) {
-                        delete[] dstImg->stats;
-                    }
-                    dstImg->stats = new double[dstImg->channels * 2];
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        uint8_t min, max;
-                        ui8Image.GetExtremePixelValues(min, max, c);
-                        dstImg->stats[c*2] = min;
-                        dstImg->stats[c*2+1] = max;
-                    }
-                } else if (dstImg->bitsPerSample <= 16) {
-                    pcl::UInt16Image ui16Image;
-                    xisfReader.ReadImage(ui16Image);
-                    
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        dstImg->pixelData[c] = malloc(dstImg->width * dstImg->height * sizeof(uint16_t));
-                        const uint16_t* srcPixels = ui16Image.PixelData(c);
-                        uint16_t* dstPixels = (uint16_t*)dstImg->pixelData[c];
-                        memcpy(dstPixels, srcPixels, dstImg->width * dstImg->height * sizeof(uint16_t));
-                    }
-                    
-                    if (dstImg->stats) {
-                        delete[] dstImg->stats;
-                    }
-                    dstImg->stats = new double[dstImg->channels * 2];
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        uint16_t min, max;
-                        ui16Image.GetExtremePixelValues(min, max, c);
-                        dstImg->stats[c*2] = min;
-                        dstImg->stats[c*2+1] = max;
+                    for (uint32_t c = 0; c < mockImg->channels; c++) {
+                        size_t size = mockImg->width * mockImg->height * sizeof(uint16_t);
+                        mockImg->pixelData[c] = malloc(size);
+                        memcpy(mockImg->pixelData[c], tempImage.PixelData(c), size);
                     }
                 } else {
-                    pcl::UInt32Image ui32Image;
-                    xisfReader.ReadImage(ui32Image);
+                    pcl::UInt32Image tempImage;
+                    xisfReader.ReadImage(tempImage);
                     
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        dstImg->pixelData[c] = malloc(dstImg->width * dstImg->height * sizeof(uint32_t));
-                        const uint32_t* srcPixels = ui32Image.PixelData(c);
-                        uint32_t* dstPixels = (uint32_t*)dstImg->pixelData[c];
-                        memcpy(dstPixels, srcPixels, dstImg->width * dstImg->height * sizeof(uint32_t));
-                    }
-                    
-                    if (dstImg->stats) {
-                        delete[] dstImg->stats;
-                    }
-                    dstImg->stats = new double[dstImg->channels * 2];
-                    for (uint32_t c = 0; c < dstImg->channels; c++) {
-                        uint32_t min, max;
-                        ui32Image.GetExtremePixelValues(min, max, c);
-                        dstImg->stats[c*2] = min;
-                        dstImg->stats[c*2+1] = max;
+                    for (uint32_t c = 0; c < mockImg->channels; c++) {
+                        size_t size = mockImg->width * mockImg->height * sizeof(uint32_t);
+                        mockImg->pixelData[c] = malloc(size);
+                        memcpy(mockImg->pixelData[c], tempImage.PixelData(c), size);
                     }
                 }
             }
             
             xisfReader.Close();
-            LogDebug("ReadImage: Successfully read XISF file: " + instance->path);
+            LogDebug("ReadImage: Successfully read XISF file");
             
             return api_true;
             
         } catch (const std::exception& e) {
             LogDebug("ReadImage: Exception reading XISF file: " + std::string(e.what()));
             return api_false;
-        } catch (...) {
-            LogDebug("ReadImage: Unknown exception reading XISF file");
-            return api_false;
         }
     }
     
-    // Handle FITS files (existing code)
-    if (isFITS && !instance->path.empty()) {
-        // ... existing FITS reading code ...
-    }
-    
-    // For non-FITS/XISF files or if reading failed, use the mock image data
-    // ... existing mock data handling code ...
-    
-    return api_true;
-}  
+    return api_false;
+}
 
 // Create a file format instance
 file_format_handle CreateFileFormatInstance(api_handle handle, meta_format_handle meta_handle) {
@@ -1799,258 +1715,101 @@ api_bool WriteImagePixelData(file_format_handle handle, const_image_handle image
     return api_true;
 }
 
-
-// Add XISF write support to API_FileFormat_WriteImage
 api_bool API_FileFormat_WriteImage(file_format_handle handle, const_image_handle image) {
     if (!handle || !image) {
-        LogDebug("WriteImage: Invalid handle or image");
         return api_false;
     }
     
-    LogDebug("WriteImage: Starting to write image to file");
-    
-    std::lock_guard<std::mutex> lock(g_file_instances_mutex);
+    std::lock_guard<std::mutex> file_lock(g_file_instances_mutex);
     auto it = g_file_instances.find(handle);
     if (it == g_file_instances.end()) {
-        LogDebug("WriteImage: File instance not found");
         return api_false;
     }
     
     MockFileInstance* instance = it->second;
-    LogDebug("WriteImage: Path = " + instance->path);
     
-    if (instance->path.empty()) {
-        LogDebug("WriteImage: No output path specified");
-        return api_false;
-    }
-    
-    // Determine file type from extension
     std::string extension = GetFileExtension(instance->path);
     bool isXISF = (extension == ".xisf");
-    bool isFITS = (extension == ".fits" || extension == ".fit" || extension == ".fts");
     
-    // Get the source image
-    std::lock_guard<std::mutex> img_lock(g_image_map_mutex);
-    auto img_it = g_image_map.find((image_handle)image);
-    if (img_it == g_image_map.end()) {
-        LogDebug("WriteImage: Source image not found");
-        return api_false;
-    }
-    
-    MockImage* srcImg = img_it->second;
-    LogDebug("WriteImage: Source image dimensions: " + 
-             std::to_string(srcImg->width) + "x" + 
-             std::to_string(srcImg->height) + ", " +
-             std::to_string(srcImg->channels) + " channels");
-    
-    // Handle XISF files
     if (isXISF) {
-        LogDebug("WriteImage: Using XISF writer for: " + instance->path);
-        
-        try {
-            pcl::XISFWriter xisfWriter;
-            
-            pcl::XISFOptions xisfOptions;
-            xisfOptions.verbosity = 2;
-            xisfWriter.SetOptions(xisfOptions);
-            
-            // Create the file with 1 image
-            xisfWriter.Create(pcl::String(instance->path.c_str()), 1);
-            
-            // Set image options
-            pcl::ImageOptions imgOptions;
-            imgOptions.bitsPerSample = srcImg->bitsPerSample;
-            imgOptions.ieeefpSampleFormat = srcImg->isFloat;
-            xisfWriter.SetImageOptions(imgOptions);
-            
-            // Determine color space - convert from our format to PCL's
-            pcl::ColorSpace::value_type colorSpace;
-            if (srcImg->channels == 1) {
-                colorSpace = pcl::ColorSpace::Gray;
-            } else {
-                colorSpace = pcl::ColorSpace::RGB;
-            }
-            
-            // Write the image based on its format
-            if (srcImg->isFloat) {
-                if (srcImg->bitsPerSample == 64) {
-                    pcl::DImage dImage(srcImg->width, srcImg->height, colorSpace);
-                    // Allocate additional channels if needed
-                    if (srcImg->channels > dImage.NumberOfChannels()) {
-                        dImage.AllocateData(srcImg->width, srcImg->height, srcImg->channels, colorSpace);
-                    }
-                    for (uint32_t c = 0; c < srcImg->channels; c++) {
-                        memcpy(dImage.PixelData(c), srcImg->pixelData[c], 
-                               srcImg->width * srcImg->height * sizeof(double));
-                    }
-                    xisfWriter.WriteImage(dImage);
-                } else {
-                    pcl::FImage fImage(srcImg->width, srcImg->height, colorSpace);
-                    // Allocate additional channels if needed
-                    if (srcImg->channels > fImage.NumberOfChannels()) {
-                        fImage.AllocateData(srcImg->width, srcImg->height, srcImg->channels, colorSpace);
-                    }
-                    for (uint32_t c = 0; c < srcImg->channels; c++) {
-                        memcpy(fImage.PixelData(c), srcImg->pixelData[c], 
-                               srcImg->width * srcImg->height * sizeof(float));
-                    }
-                    xisfWriter.WriteImage(fImage);
-                }
-            } else {
-                if (srcImg->bitsPerSample <= 8) {
-                    pcl::UInt8Image ui8Image(srcImg->width, srcImg->height, colorSpace);
-                    // Allocate additional channels if needed
-                    if (srcImg->channels > ui8Image.NumberOfChannels()) {
-                        ui8Image.AllocateData(srcImg->width, srcImg->height, srcImg->channels, colorSpace);
-                    }
-                    for (uint32_t c = 0; c < srcImg->channels; c++) {
-                        memcpy(ui8Image.PixelData(c), srcImg->pixelData[c], 
-                               srcImg->width * srcImg->height * sizeof(uint8_t));
-                    }
-                    xisfWriter.WriteImage(ui8Image);
-                } else if (srcImg->bitsPerSample <= 16) {
-                    pcl::UInt16Image ui16Image(srcImg->width, srcImg->height, colorSpace);
-                    // Allocate additional channels if needed
-                    if (srcImg->channels > ui16Image.NumberOfChannels()) {
-                        ui16Image.AllocateData(srcImg->width, srcImg->height, srcImg->channels, colorSpace);
-                    }
-                    for (uint32_t c = 0; c < srcImg->channels; c++) {
-                        memcpy(ui16Image.PixelData(c), srcImg->pixelData[c], 
-                               srcImg->width * srcImg->height * sizeof(uint16_t));
-                    }
-                    xisfWriter.WriteImage(ui16Image);
-                } else {
-                    pcl::UInt32Image ui32Image(srcImg->width, srcImg->height, colorSpace);
-                    // Allocate additional channels if needed
-                    if (srcImg->channels > ui32Image.NumberOfChannels()) {
-                        ui32Image.AllocateData(srcImg->width, srcImg->height, srcImg->channels, colorSpace);
-                    }
-                    for (uint32_t c = 0; c < srcImg->channels; c++) {
-                        memcpy(ui32Image.PixelData(c), srcImg->pixelData[c], 
-                               srcImg->width * srcImg->height * sizeof(uint32_t));
-                    }
-                    xisfWriter.WriteImage(ui32Image);
-                }
-            }
-            
-            xisfWriter.Close();
-            LogDebug("WriteImage: Successfully wrote XISF file: " + instance->path);
-            return api_true;
-            
-        } catch (const std::exception& e) {
-            LogDebug("WriteImage: Exception writing XISF file: " + std::string(e.what()));
-            return api_false;
-        }
-    }
-    
-    // Handle FITS files (existing CFITSIO code)
-    if (isFITS) {
-        LogDebug("WriteImage: Using FITS writer for: " + instance->path);
-        
-        try {
-            fitsfile *fptr;
-            int status = 0;
-            long naxes[3];
-            int bitpix, datatype;
-            
-            naxes[0] = srcImg->width;
-            naxes[1] = srcImg->height;
-            naxes[2] = srcImg->channels;
-            
-            if (srcImg->isFloat) {
-                if (srcImg->bitsPerSample == 64) {
-                    bitpix = DOUBLE_IMG;
-                    datatype = TDOUBLE;
-                } else {
-                    bitpix = FLOAT_IMG;
-                    datatype = TFLOAT;
-                }
-            } else {
-                if (srcImg->bitsPerSample <= 8) {
-                    bitpix = BYTE_IMG;
-                    datatype = TBYTE;
-                } else if (srcImg->bitsPerSample <= 16) {
-                    bitpix = SHORT_IMG;
-                    datatype = TSHORT;
-                } else {
-                    bitpix = LONG_IMG;
-                    datatype = TLONG;
-                }
-            }
-            
-            std::string filename = instance->path;
-            if (filename.find('!') != 0) {
-                filename = "!" + filename;
-            }
-            
-            CFITSIO_LOCK
-            
-            if (fits_create_file(&fptr, filename.c_str(), &status)) {
-                LogDebug("WriteImage: Failed to create FITS file, status = " + std::to_string(status));
-                return api_false;
-            }
-            
-            int naxis = 3;
-            if (fits_create_img(fptr, bitpix, naxis, naxes, &status)) {
-                LogDebug("WriteImage: Failed to create FITS image, status = " + std::to_string(status));
-                fits_close_file(fptr, &status);
-                return api_false;
-            }
-            
-            fits_write_date(fptr, &status);
-            
-            const char* creator = "GradientsBatchRemoval";
-            fits_write_key(fptr, TSTRING, "CREATOR", const_cast<char*>(creator), 
-                          "Software that created this file", &status);
-            
-            if (srcImg->channels > 1) {
-                const char* colorspace = "RGB";
-                fits_write_key(fptr, TSTRING, "COLORSP", const_cast<char*>(colorspace), 
-                              "Color space", &status);
-                              
-                int pixColor = 1;
-                fits_write_key(fptr, TLOGICAL, "ICOLOR", &pixColor, 
-                              "PixInsight color image flag", &status);
-            }
-            
-            for (uint32_t c = 0; c < srcImg->channels; c++) {
-                long fpixel[3] = {1, 1, c+1};
-                const void* src_data = srcImg->pixelData[c];
-                if (!src_data) {
-                    LogDebug("WriteImage: Source pixel data is null for channel " + std::to_string(c));
-                    fits_close_file(fptr, &status);
-                    return api_false;
-                }
-                
-                long nelements = srcImg->width * srcImg->height;
-                
-                if (fits_write_pix(fptr, datatype, fpixel, nelements, 
-                                  const_cast<void*>(src_data), &status)) {
-                    LogDebug("WriteImage: Failed to write channel data, status = " + 
-                            std::to_string(status) + " for channel " + std::to_string(c));
-                    fits_close_file(fptr, &status);
-                    return api_false;
-                }
-            }
-            
-            if (fits_close_file(fptr, &status)) {
-                LogDebug("WriteImage: Failed to close FITS file, status = " + std::to_string(status));
-                return api_false;
-            }
-            
-            LogDebug("WriteImage: Successfully wrote FITS file: " + instance->path);
-            return api_true;
-            
-        } catch (const std::exception& e) {
-            LogDebug("WriteImage: Exception writing FITS file: " + std::string(e.what()));
-            return api_false;
-        }
-    }
-    
-    LogDebug("WriteImage: Unsupported file format");
+	LogDebug("WriteImage: Using XISF writer for: " + instance->path);
+
+	// Get the MockImage
+	std::lock_guard<std::mutex> img_lock(g_image_map_mutex);
+	auto img_it = g_image_map.find((image_handle)image);
+	if (img_it == g_image_map.end()) {
+	    LogDebug("WriteImage: Image not found in map");
+	    return api_false;
+	}
+
+	MockImage* mockImg = img_it->second;
+
+	LogDebug("WriteImage: MockImage is " + 
+		 std::to_string(mockImg->width) + "x" + 
+		 std::to_string(mockImg->height) + ", " +
+		 std::to_string(mockImg->channels) + " channels");
+
+	if (!mockImg->pixelData) {
+	    LogDebug("WriteImage: pixelData is NULL!");
+	    return api_false;
+	}
+
+	try {
+	    // Determine color space
+	    pcl::ColorSpace::value_type colorSpace;
+	    if (mockImg->channels == 1) {
+		colorSpace = pcl::ColorSpace::Gray;
+	    } else if (mockImg->channels == 3) {
+		colorSpace = pcl::ColorSpace::RGB;
+	    } else {
+		colorSpace = pcl::ColorSpace::RGB; // Default for other cases
+	    }
+
+	    // Create a PCL image with correct constructor
+	    pcl::FImage outputImage(mockImg->width, mockImg->height, colorSpace);
+
+	    // If we need more channels than the color space provides, allocate them
+	    if (mockImg->channels > outputImage.NumberOfChannels()) {
+		outputImage.AllocateData(mockImg->width, mockImg->height, mockImg->channels, colorSpace);
+	    }
+
+	    for (uint32_t c = 0; c < mockImg->channels; c++) {
+		if (!mockImg->pixelData[c]) {
+		    LogDebug("WriteImage: Channel " + std::to_string(c) + " is NULL!");
+		    return api_false;
+		}
+
+		memcpy(outputImage.PixelData(c), 
+		       mockImg->pixelData[c], 
+		       mockImg->width * mockImg->height * sizeof(float));
+	    }
+
+	    pcl::XISFWriter xisfWriter;
+	    pcl::XISFOptions xisfOptions;
+	    xisfOptions.verbosity = 2;
+	    xisfWriter.SetOptions(xisfOptions);
+
+	    xisfWriter.Create(pcl::String(instance->path.c_str()), 1);
+
+	    pcl::ImageOptions imgOptions;
+	    imgOptions.bitsPerSample = 32;
+	    imgOptions.ieeefpSampleFormat = true;
+	    xisfWriter.SetImageOptions(imgOptions);
+
+	    xisfWriter.WriteImage(outputImage);
+
+	    xisfWriter.Close();
+	    LogDebug("WriteImage: Successfully wrote XISF file");
+	    return api_true;
+
+	} catch (const std::exception& e) {
+	    LogDebug("WriteImage: Exception: " + std::string(e.what()));
+	    return api_false;
+	}
+    }    
     return api_false;
-}
-      
+}  
+  
 // Set the RGB working space for an image in a file
 api_bool SetImageRGBWS(file_format_handle handle, const api_RGBWS* rgbws) {
     if (!handle || !rgbws) {
@@ -2129,13 +1888,11 @@ api_bool SetImageDescription(file_format_handle handle, const api_image_info* in
     return api_true;
 }
 
-// Create a shared image
 image_handle API_SharedImage_CreateImage(uint32_t w, uint32_t h, uint32_t n, uint32_t nbits, api_bool flt, uint32_t cs, void* ptr) {
     LogDebug("SharedCreateImage called with dimensions: " + 
              std::to_string(w) + "x" + std::to_string(h) + 
              ", channels: " + std::to_string(n));
     
-    // Allocate a mock image structure
     MockImage* img = new MockImage();
     img->width = w;
     img->height = h;
@@ -2144,39 +1901,31 @@ image_handle API_SharedImage_CreateImage(uint32_t w, uint32_t h, uint32_t n, uin
     img->isFloat = (flt == api_true);
     img->colorSpace = cs;
     
-    // Allocate pixel data (one pointer per channel)
+    // Allocate the ARRAY of pointers (not the actual pixels yet)
+    // PCL will allocate actual pixels via API_Global_Allocate and give us pointers via SetImagePixelData
     img->pixelData = new void*[n];
-    
-    // Calculate bytes per sample
-    size_t bytesPerSample = (nbits <= 8) ? 1 : 
-                           ((nbits <= 16) ? 2 : 
-                           ((nbits <= 32) ? 4 : 8));
-    
-    // Allocate memory for each channel
     for (uint32_t i = 0; i < n; i++) {
-        img->pixelData[i] = calloc(w * h, bytesPerSample);
+        img->pixelData[i] = nullptr;  // Initialize to null - PCL will fill these in
     }
     
-    // Create stats array (min/max per channel)
-    img->stats = new double[n * 2];  // min, max for each channel
+    img->stats = new double[n * 2];
     for (uint32_t i = 0; i < n; i++) {
-        img->stats[i*2] = 0.0;       // min
+        img->stats[i*2] = 0.0;
         img->stats[i*2+1] = (flt == api_true) ? 1.0 : 
                            ((nbits <= 8) ? 255 : 
-                           ((nbits <= 16) ? 65535 : 4294967295.0));  // max
+                           ((nbits <= 16) ? 65535 : 4294967295.0));
     }
     
-    // Create a unique handle
     image_handle handle = (image_handle)img;
     
-    // Store in our map
     std::lock_guard<std::mutex> lock(g_image_map_mutex);
     g_image_map[handle] = img;
+    
+    LogDebug("SharedCreateImage: Created image with null pixel pointers (PCL will allocate)");
     
     return handle;
 }
 
-// Get pixel data from image
 api_bool API_SharedImage_GetImagePixelData(image_handle handle, void*** data) {
     if (!handle || !data) {
         return api_false;
@@ -2188,7 +1937,12 @@ api_bool API_SharedImage_GetImagePixelData(image_handle handle, void*** data) {
         return api_false;
     }
     
-    *data = it->second->pixelData;
+    MockImage* img = it->second;
+    LogDebug("GetImagePixelData: Returning pixelData for " + 
+             std::to_string(img->channels) + " channels, pixelData=" + 
+             (img->pixelData ? "valid" : "NULL"));
+    
+    *data = img->pixelData;
     return api_true;
 }
 
@@ -2385,10 +2139,9 @@ api_bool API_SharedImage_DetachFromImage(image_handle handle, void* owner) {
     return api_true;
 }
 
-// Set pixel data for an image
 api_bool API_SharedImage_SetImagePixelData(image_handle handle, void** data) {
-    if (!handle || !data) {
-        LogDebug("SetImagePixelData: Invalid handle or data pointer");
+    if (!handle) {
+        LogDebug("SetImagePixelData: Invalid handle");
         return api_false;
     }
     
@@ -2400,27 +2153,30 @@ api_bool API_SharedImage_SetImagePixelData(image_handle handle, void** data) {
     }
     
     MockImage* img = it->second;
-    /*    
-    // First, free existing pixel data if we have any
-    for (uint32_t i = 0; i < img->channels; i++) {
-        if (img->pixelData[i]) {
-            free(img->pixelData[i]);
-        }
-    }
-    */
-    // Set the new pixel data pointers
-    for (uint32_t i = 0; i < img->channels; i++) {
-        img->pixelData[i] = data[i];
+    
+    if (data == nullptr) {
+        LogDebug("SetImagePixelData: Clearing pixel data (data is null)");
+        img->pixelData = nullptr;
+        return api_true;
     }
     
-    LogDebug("SetImagePixelData: Successfully set pixel data for image");
+    // Add detailed logging
+    LogDebug("SetImagePixelData: Setting pixel data for image " + 
+             std::to_string(img->width) + "x" + std::to_string(img->height) + 
+             " with " + std::to_string(img->channels) + " channels");
+    for (uint32_t c = 0; c < img->channels; c++) {
+        LogDebug("  Channel " + std::to_string(c) + ": " + 
+                 (data[c] ? "valid pointer" : "NULL"));
+    }
+    
+    img->pixelData = data;
+    
+    LogDebug("SetImagePixelData: Successfully set pixel data pointer array");
     return api_true;
-}
+}  
 
-// Set the geometry (dimensions and channels) of an image
 api_bool API_SharedImage_SetImageGeometry(image_handle handle, uint32_t w, uint32_t h, uint32_t n) {
     if (!handle) {
-        LogDebug("SetImageGeometry: Invalid handle");
         return api_false;
     }
     
@@ -2431,59 +2187,33 @@ api_bool API_SharedImage_SetImageGeometry(image_handle handle, uint32_t w, uint3
     std::lock_guard<std::mutex> lock(g_image_map_mutex);
     auto it = g_image_map.find(handle);
     if (it == g_image_map.end()) {
-        LogDebug("SetImageGeometry: Image handle not found in map");
         return api_false;
     }
     
     MockImage* img = it->second;
     
-    // If dimensions are the same, nothing to do
-    if (img->width == w && img->height == h && img->channels == n) {
-        LogDebug("SetImageGeometry: Dimensions unchanged");
-        return api_true;
-    }
-    
-    // Free existing pixel data
-    for (uint32_t i = 0; i < img->channels; i++) {
-        if (img->pixelData[i]) {
-            free(img->pixelData[i]);
-            img->pixelData[i] = nullptr;
-        }
-    }
-    
-    // If channel count changed, reallocate the array of pointers
-    if (img->channels != n) {
-        delete[] img->pixelData;
-        img->pixelData = new void*[n];
-        
-        // Also update the stats array
-        delete[] img->stats;
-        img->stats = new double[n * 2];  // min/max for each channel
-    }
-    
-    // Set new dimensions
+    // Just update the metadata - DON'T touch pixelData!
+    // PCL has already given us the pointers via SetImagePixelData
     img->width = w;
     img->height = h;
     img->channels = n;
     
-    // Calculate bytes per sample
-    size_t bytesPerSample = (img->bitsPerSample <= 8) ? 1 : 
-                           ((img->bitsPerSample <= 16) ? 2 : 
-                           ((img->bitsPerSample <= 32) ? 4 : 8));
-    
-    // Allocate memory for each channel
+    // Update stats array (we own this)
+    if (img->stats) {
+        delete[] img->stats;
+    }
+    img->stats = new double[n * 2];
     for (uint32_t i = 0; i < n; i++) {
-        img->pixelData[i] = calloc(w * h, bytesPerSample);
-        img->stats[i*2] = 0.0;       // min
+        img->stats[i*2] = 0.0;
         img->stats[i*2+1] = (img->isFloat) ? 1.0 : 
                            ((img->bitsPerSample <= 8) ? 255 : 
-                           ((img->bitsPerSample <= 16) ? 65535 : 4294967295.0));  // max
+                           ((img->bitsPerSample <= 16) ? 65535 : 4294967295.0));
     }
     
-    LogDebug("SetImageGeometry: Successfully resized image");
+    LogDebug("SetImageGeometry: Successfully updated geometry metadata");
     return api_true;
 }
-
+  
 // Set the color space of an image
 api_bool API_SharedImage_SetImageColorSpace(image_handle handle, uint32_t cs) {
     if (!handle) {
@@ -2537,11 +2267,6 @@ extern "C"
    /*
     * Error information
     */
-   uint32      (API_Global_LastError)()
-   {
-
-     abort();
-   }
    void        (API_Global_ClearError)()
    {
 
@@ -4847,10 +4572,6 @@ meta_format_handle API_FileFormat_GetFileFormatByName(api_handle, const char* id
 
   abort();
 }
-meta_format_handle API_FileFormat_GetFileFormatByFileExtension(api_handle handle, const char16_type* ext, api_bool toRead, api_bool toWrite)
-{
-  return GetFileFormatByFileExtension(handle, ext, toRead, toWrite);
-}
 
 meta_format_handle API_FileFormat_GetFileFormatByMimeType(api_handle, const char* mimeType, api_bool toRead, api_bool toWrite)
 {
@@ -4861,24 +4582,23 @@ meta_format_handle API_FileFormat_GetFileFormatByMimeType(api_handle, const char
 api_bool API_FileFormat_GetFileFormatName(meta_format_handle handle, char* name, size_type* len)
 {
     if (handle == nullptr || len == nullptr) {
-        return 0;  // false
+        return 0;
     }
     
-    const MockFileFormat* const format = static_cast<const MockFileFormat*>(handle);
+    // FIXED: Cast to MockFormatCapabilities
+    const MockFormatCapabilities* format = static_cast<const MockFormatCapabilities*>(handle);
     
     if (name == nullptr) {
-        // Caller wants to know the required buffer size
         *len = format->name.length();
-        return 1;  // true
+        return 1;
     }
     
-    // Copy the name
     size_type copyLen = std::min(*len - 1, format->name.length());
     std::strncpy(name, format->name.c_str(), copyLen);
     name[copyLen] = '\0';
     *len = copyLen;
     
-    return 1;  // true
+    return 1;
 }
 
 api_bool API_FileFormat_GetFileFormatFileExtensions(meta_format_handle, char16_type**, size_type* extCount, size_type* maxExtLen)
@@ -4901,36 +4621,37 @@ api_bool API_FileFormat_GetFileFormatDescription(meta_format_handle, char16_type
 
   abort();
 }
+
 api_bool API_FileFormat_GetFileFormatImplementation(meta_format_handle, char16_type*, size_type*)
 {
 
   abort();
 }
+
 bitmap_handle API_FileFormat_GetFileFormatIcon(meta_format_handle)
 {
 
   abort();
 }
+
 bitmap_handle API_FileFormat_GetFileFormatSmallIcon(meta_format_handle)
 {
 
   abort();
 }
-api_bool API_FileFormat_GetFileFormatCapabilities(meta_format_handle handle, api_format_capabilities *capabilities)
-{
-  return GetFileFormatCapabilities( handle, capabilities);
 
-}
 api_bool API_FileFormat_GetFileFormatStatus(meta_format_handle, char16_type*, size_type*, void*)
 {
 
   abort();
 }
+
 api_bool API_FileFormat_EditFileFormatPreferences(meta_format_handle)
 {
 
   abort();
 }
+
 file_format_handle API_FileFormat_CreateFileFormatInstance(api_handle handle, meta_format_handle meta_handle)
 {
 
