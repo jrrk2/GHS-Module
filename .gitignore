@@ -1,1 +1,7 @@
 *~
+*.o
+*.d
+*.fits
+*.xisf
+macosx/g++/arm64/Release/GHS
+quality/build

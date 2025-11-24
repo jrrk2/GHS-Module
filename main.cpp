@@ -438,7 +438,7 @@ int main(int argc, char *argv[])
             // Cleanup
             delete interface;
             delete process;
-            delete module;
+	    //            delete module;
             
             return success ? 0 : 1;
         }
