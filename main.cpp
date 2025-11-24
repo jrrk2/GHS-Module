@@ -1,3 +1,4 @@
+#include <QApplication>
 #include "Assert.h"
 #include "GHSInstance.h"
 #include "GHSInterface.h"
@@ -310,8 +311,7 @@ void PrintUsage()
 int main(int argc, char *argv[])
 {
   SetDebugLogging(true);
-  //    try {
-        std::cout << "=== GHS Image Processing Tool ===" << std::endl;
+      QApplication app(argc, argv);
         
         // Set module handle
         void *dummy_handle = (void *)0xDEADBEEF;
@@ -320,7 +320,30 @@ int main(int argc, char *argv[])
         // Initialize PCL modules
         pcl::GHSModule* module = new pcl::GHSModule();
         pcl::GHSProcess* process = new pcl::GHSProcess();
-        pcl::GHSInterface* interface = new pcl::GHSInterface();
+    
+    // Create the interface
+    GHSInterface* interface = TheGHSInterface;
+    if (!interface) {
+        interface = new GHSInterface();
+    }
+    
+    // Launch it
+    bool dynamic = false;
+    unsigned flags = 0;
+    
+    if (interface->Launch(*TheGHSProcess, nullptr, dynamic, flags)) {
+        // Interface is now created and visible
+        // The Launch() method calls: GUI = new GUIData(*this)
+        
+        // Show the interface window
+        interface->Show();
+        
+        // Run Qt event loop
+        return app.exec();
+    }
+
+  //    try {
+        std::cout << "=== GHS Image Processing Tool ===" << std::endl;
         
         // Verify parameters were initialized
         if (!pcl::TheGHSSTParameter || !pcl::TheGHSParameter) {
