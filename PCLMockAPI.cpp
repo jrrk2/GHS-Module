@@ -31,8 +31,8 @@
 #include <QRadioButton>
 #include <QLineEdit>
 #include <QTextEdit>
+#include <QGroupBox>
 /*
-#include <>
 #include <>
 #include <>
 #include <>
@@ -141,7 +141,10 @@ struct MockControl {
     
     pcl::control_event_routine loseFocusHandler;
     void* loseFocusReceiver;
-    
+
+    pcl::event_routine editCompletedHandler;
+    void* editCompletedReceiver;
+  
     MockControl(QWidget* w = nullptr) 
         : widget(w ? w : new QWidget()),
           clientHandle(nullptr),
@@ -162,7 +165,8 @@ struct MockControl {
           hideHandler(nullptr), hideReceiver(nullptr),
           closeHandler(nullptr), closeReceiver(nullptr),
           getFocusHandler(nullptr), getFocusReceiver(nullptr),
-          loseFocusHandler(nullptr), loseFocusReceiver(nullptr)
+          loseFocusHandler(nullptr), loseFocusReceiver(nullptr),
+	  editCompletedHandler(nullptr), editCompletedReceiver(nullptr)
     {
     }
     
@@ -417,6 +421,11 @@ public:
     
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override {
+	if (!mockControl) {
+	    // No mock control, just pass through
+	    return QObject::eventFilter(obj, event);
+	}
+
         switch (event->type()) {
             case QEvent::Paint:
                 if (mockControl->paintHandler && mockControl->paintReceiver) {
@@ -533,14 +542,26 @@ static void EnableEvents(control_handle handle, MockControl* ctrl) {
         return;
     }
     
-    LogDebug("EnableEvents: installing event filter on widget");
+    // Check if we already have an event filter installed
+    QObjectList children = ctrl->widget->children();
+    for (QObject* child : children) {
+        if (ControlEventFilter* existingFilter = dynamic_cast<ControlEventFilter*>(child)) {
+            LogDebug("EnableEvents: event filter already exists, updating");
+            existingFilter->mockControl = ctrl;
+            existingFilter->controlHandle = handle;
+            return;
+        }
+    }
     
-    // Create and install an event filter instead of replacing the widget
+    LogDebug("EnableEvents: installing new event filter on widget");
+    
+    // Create and install an event filter
+    // Set the widget as parent so it gets cleaned up automatically
     ControlEventFilter* filter = new ControlEventFilter(handle, ctrl, ctrl->widget);
     ctrl->widget->installEventFilter(filter);
     
     LogDebug("EnableEvents: event filter installed successfully");
-}  
+}
 
 // ----------------------------------------------------------------------------
 // Event Handler Registration Functions
@@ -625,19 +646,34 @@ api_bool API_Control_SetCloseEventRoutine(control_handle handle, api_handle rece
     return api_true;
 }
 
-api_bool API_Control_SetGetFocusEventRoutine(control_handle handle, api_handle receiver,
-                                             pcl::control_event_routine handler)
+api_bool API_Control_SetGetFocusEventRoutine(
+        control_handle handle,
+        api_handle receiver,
+        pcl::control_event_routine handler)
 {
     LogDbg("SetGetFocusEventRoutine called");
-    
+
+    if (!handle)
+        return api_false;
+
     std::lock_guard<std::mutex> lock(g_control_map_mutex);
+
+    MockControl* ctrl = nullptr;
     auto it = g_control_map.find(handle);
-    if (it == g_control_map.end()) return api_false;
-    
-    MockControl* ctrl = it->second;
-    ctrl->getFocusHandler = handler;
+
+    if (it == g_control_map.end()) {
+        // Create new MockControl for existing QWidget*
+        QWidget* widget = reinterpret_cast<QWidget*>(handle);
+        ctrl = new MockControl(widget);
+        g_control_map[handle] = ctrl;
+        LogDebug("SetGetFocusEventRoutine: created new MockControl");
+    } else {
+        ctrl = it->second;
+    }
+
+    ctrl->getFocusHandler  = handler;
     ctrl->getFocusReceiver = receiver;
-    
+
     EnableEvents(handle, ctrl);
     return api_true;
 }
@@ -747,13 +783,28 @@ api_bool API_Control_SetPaintEventRoutine(control_handle handle, api_handle rece
 api_bool API_Control_SetKeyPressEventRoutine(control_handle handle, api_handle receiver,
                                              pcl::keyboard_event_routine handler)
 {
-    LogDbg("SetKeyPressEventRoutine called");
+    LogDebug("SetKeyPressEventRoutine called");
+    
+    if (!handle) {
+        LogDebug("SetKeyPressEventRoutine: null handle");
+        return api_false;
+    }
     
     std::lock_guard<std::mutex> lock(g_control_map_mutex);
-    auto it = g_control_map.find(handle);
-    if (it == g_control_map.end()) return api_false;
     
-    MockControl* ctrl = it->second;
+    // Get or create MockControl
+    MockControl* ctrl = nullptr;
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) {
+        // Create new MockControl for existing widget
+        QWidget* widget = reinterpret_cast<QWidget*>(handle);
+        ctrl = new MockControl(widget);
+        g_control_map[handle] = ctrl;
+        LogDebug("SetKeyPressEventRoutine: created new MockControl");
+    } else {
+        ctrl = it->second;
+    }
+    
     ctrl->keyPressHandler = handler;
     ctrl->keyPressReceiver = receiver;
     
@@ -764,13 +815,28 @@ api_bool API_Control_SetKeyPressEventRoutine(control_handle handle, api_handle r
 api_bool API_Control_SetKeyReleaseEventRoutine(control_handle handle, api_handle receiver,
                                                pcl::keyboard_event_routine handler)
 {
-    LogDbg("SetKeyReleaseEventRoutine called");
+    LogDebug("SetKeyReleaseEventRoutine called");
+    
+    if (!handle) {
+        LogDebug("SetKeyReleaseEventRoutine: null handle");
+        return api_false;
+    }
     
     std::lock_guard<std::mutex> lock(g_control_map_mutex);
-    auto it = g_control_map.find(handle);
-    if (it == g_control_map.end()) return api_false;
     
-    MockControl* ctrl = it->second;
+    // Get or create MockControl
+    MockControl* ctrl = nullptr;
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) {
+        // Create new MockControl for existing widget
+        QWidget* widget = reinterpret_cast<QWidget*>(handle);
+        ctrl = new MockControl(widget);
+        g_control_map[handle] = ctrl;
+        LogDebug("SetKeyReleaseEventRoutine: created new MockControl");
+    } else {
+        ctrl = it->second;
+    }
+    
     ctrl->keyReleaseHandler = handler;
     ctrl->keyReleaseReceiver = receiver;
     
@@ -808,11 +874,26 @@ api_bool API_Control_SetMousePressEventRoutine(control_handle handle, api_handle
 {
     LogDbg("SetMousePressEventRoutine called");
     
-    std::lock_guard<std::mutex> lock(g_control_map_mutex);
-    auto it = g_control_map.find(handle);
-    if (it == g_control_map.end()) return api_false;
+    if (!handle) {
+        LogDebug("SetMousePressEventRoutine: null handle");
+        return api_false;
+    }
     
-    MockControl* ctrl = it->second;
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    
+    // Get or create MockControl
+    MockControl* ctrl = nullptr;
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) {
+        // Create new MockControl for existing widget
+        QWidget* widget = reinterpret_cast<QWidget*>(handle);
+        ctrl = new MockControl(widget);
+        g_control_map[handle] = ctrl;
+        LogDebug("SetMousePressEventRoutine: created new MockControl");
+    } else {
+        ctrl = it->second;
+    }
+    
     ctrl->mousePressHandler = handler;
     ctrl->mousePressReceiver = receiver;
     
@@ -4091,14 +4172,43 @@ control_handle API_Button_CreateRadioButton(api_handle hModule, api_handle clien
 // ----------------------------------------------------------------------------
 // Edit Context Implementation
 // ----------------------------------------------------------------------------
-
 struct MockEdit {
     QLineEdit* edit;
     api_handle clientHandle;
-    
+
+    // Edit events
+    pcl::event_routine editCompletedHandler;
+    void* editCompletedReceiver;
+
+    pcl::event_routine returnPressedHandler;
+    void* returnPressedReceiver;
+
+    pcl::unicode_event_routine textUpdatedHandler;
+    void* textUpdatedReceiver;
+
+    pcl::range_event_routine caretPositionUpdatedHandler;
+    void* caretPositionUpdatedReceiver;
+
+    pcl::range_event_routine selectionUpdatedHandler;
+    void* selectionUpdatedReceiver;
+  
+    // Validation
+    QRegularExpressionValidator* validator;
+
     MockEdit(const char16_type* text = nullptr) 
-        : edit(new QLineEdit()),
-          clientHandle(nullptr)
+        : edit(new QLineEdit())
+	, clientHandle(nullptr)
+	, editCompletedHandler(nullptr)
+	, editCompletedReceiver(nullptr)
+	, returnPressedHandler(nullptr)
+	, returnPressedReceiver(nullptr)
+	, textUpdatedHandler(nullptr)
+	, textUpdatedReceiver(nullptr)
+	, caretPositionUpdatedHandler(nullptr)
+	, caretPositionUpdatedReceiver(nullptr)
+	, selectionUpdatedHandler(nullptr)
+	, selectionUpdatedReceiver(nullptr)
+	, validator(nullptr)
     {
         if (text && *text) {
             edit->setText(QString::fromUtf16(reinterpret_cast<const ushort*>(text)));
@@ -4107,6 +4217,7 @@ struct MockEdit {
     
     ~MockEdit() {
         // Qt parent ownership handles deletion
+      delete validator;
     }
 };
 
@@ -4389,6 +4500,24 @@ void API_Slider_SetSliderRange(control_handle handle, int32 minValue, int32 maxV
     
     it->second->slider->setRange(minValue, maxValue);
 }
+
+struct MockGroupBox {
+    QGroupBox* box;
+    api_handle clientHandle;
+
+    MockGroupBox() :
+        box(new QGroupBox()),
+        clientHandle(nullptr)
+    {
+    }
+
+    ~MockGroupBox() {
+        // QGroupBox is cleaned up by Qt parent ownership
+    }
+};
+
+static std::map<control_handle, MockGroupBox*> g_groupbox_map;
+static std::mutex g_groupbox_map_mutex;
 
 // Mock implementations for Global API functions
 
@@ -9225,10 +9354,33 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
      // returns client handle
      abort();
    }
-   void           (API_Control_SetChildControlToFocus)( control_handle, control_handle )
-   {
 
-     abort();
+   api_bool API_Control_SetChildControlToFocus(
+	   control_handle parentHandle,
+	   control_handle childHandle )
+   {
+       LogDbg("API_Control_SetChildControlToFocus called");
+
+       QWidget* parent = reinterpret_cast<QWidget*>(parentHandle);
+       QWidget* child  = reinterpret_cast<QWidget*>(childHandle);
+
+       if (!parent || !child)
+	   return api_false;
+
+       // Must actually be a descendant
+       if (!child->isAncestorOf(parent) && !parent->isAncestorOf(child)) {
+	   // Not required by PI, but prevents nonsensical calls
+	   LogDbg("SetChildControlToFocus: widget is not a child of parent");
+       }
+
+       if (!child->isVisible()) {
+	   // Same as PixInsight – ensure visible before focusing
+	   child->show();
+       }
+
+       child->setFocus(Qt::OtherFocusReason);
+
+       return api_true;
    }
 
    control_handle (API_Control_GetNextSiblingControlToFocus)( const_control_handle )
@@ -9310,10 +9462,32 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
 
      abort();
    }
-   void           (API_Control_SetControlBackgroundColor)( control_handle, uint32 )
+   api_bool API_Control_SetControlBackgroundColor(
+	   control_handle handle,
+	   uint32 argb )
    {
+       LogDbg("API_Control_SetControlBackgroundColor called");
 
-     abort();
+       QWidget* w = reinterpret_cast<QWidget*>(handle);
+       if (!w)
+	   return api_false;
+
+       // Convert ARGB → QColor
+       QColor color(
+	   (argb >> 16) & 0xFF,   // R
+	   (argb >>  8) & 0xFF,   // G
+	   (argb >>  0) & 0xFF,   // B
+	   (argb >> 24) & 0xFF    // A
+       );
+
+       // Apply using Qt palette so it behaves like PixInsight
+       QPalette pal = w->palette();
+       pal.setColor(QPalette::Base, color);
+       pal.setColor(QPalette::Window, color);
+       w->setPalette(pal);
+       w->setAutoFillBackground(true);
+
+       return api_true;
    }
 
    uint32         (API_Control_GetControlForegroundColor)( const_control_handle )
@@ -9860,86 +10034,400 @@ api_bool API_Edit_GetEditValidatingRegExp(const_control_handle, char16_type*, si
 
   abort();
 }
-api_bool API_Edit_SetEditValidatingRegExp(control_handle, const char16_type*, api_bool caseSensitive)
+api_bool API_Edit_SetEditValidatingRegExp(
+        control_handle handle,
+        const char16_type* regexp,
+        api_bool caseSensitive )
 {
+    LogDbg("API_Edit_SetEditValidatingRegExp called");
 
-  abort();
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end())
+        return api_false;
+
+    MockEdit* edit = it->second;
+    QLineEdit* w = edit->edit;
+
+    // Convert UTF-16 PixInsight regexp → QString
+    QString pattern = QString::fromUtf16(reinterpret_cast<const ushort*>(regexp));
+
+    // Delete old validator if present
+    if (edit->validator) {
+        delete edit->validator;
+        edit->validator = nullptr;
+    }
+
+    // Compile regular expression
+    QRegularExpression re(pattern);
+
+    // Apply case sensitivity
+    re.setPatternOptions(caseSensitive ? QRegularExpression::NoPatternOption
+                                       : QRegularExpression::CaseInsensitiveOption);
+
+    // Create new validator
+    edit->validator = new QRegularExpressionValidator(re, w);
+
+    // Install validator on the QLineEdit
+    w->setValidator(edit->validator);
+
+    return api_true;
 }
-api_bool API_Edit_GetEditValid(const_control_handle)
+
+api_bool API_Edit_GetEditValid(const_control_handle handle)
 {
+    LogDbg("API_Edit_GetEditValid called");
 
-  abort();
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(const_cast<control_handle>(handle));
+    if (it == g_edit_map.end())
+        return api_false;
+
+    MockEdit* edit = it->second;
+    QLineEdit* w = edit->edit;
+
+    if (!w->validator())
+        return api_true; // No validator → always valid
+
+    return w->hasAcceptableInput() ? api_true : api_false;
 }
-void API_Edit_SetEditSelected(control_handle, api_bool)
+
+void API_Edit_SetEditSelected(control_handle handle, api_bool selected)
 {
+    LogDbg("API_Edit_SetEditSelected called");
 
-  abort();
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end())
+        return;
+
+    MockEdit* edit = it->second;
+    QLineEdit* w = edit->edit;
+
+    if (selected)
+        w->selectAll();
+    else
+        w->deselect();
 }
-int32 API_Edit_GetEditAlignment(const_control_handle)
+
+int32 API_Edit_GetEditAlignment(const_control_handle handle)
 {
-  // only left and right alignments
-  abort();
+    LogDbg("API_Edit_GetEditAlignment called");
+
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(const_cast<control_handle>(handle));
+    if (it == g_edit_map.end())
+        return 0;
+
+    MockEdit* edit = it->second;
+    Qt::Alignment a = edit->edit->alignment();
+
+    if (a & Qt::AlignRight)
+        return 1; // right
+    else
+        return 0; // left (default)
 }
-   void           (API_Edit_SetEditAlignment)( control_handle, int32 )
+  
+void API_Edit_SetEditAlignment(control_handle handle, int32 align)
+{
+    LogDbg("API_Edit_SetEditAlignment called");
+
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end())
+        return;
+
+    MockEdit* edit = it->second;
+    QLineEdit* w = edit->edit;
+
+    Qt::Alignment a = Qt::AlignVCenter;
+    if (align == 1)
+        a |= Qt::AlignRight;
+    else
+        a |= Qt::AlignLeft;
+
+    w->setAlignment(a);
+}
+
+int32 API_Edit_GetEditCaretPosition(const_control_handle handle)
+{
+    LogDbg("API_Edit_GetEditCaretPosition called");
+
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(const_cast<control_handle>(handle));
+    if (it == g_edit_map.end())
+        return 0;
+
+    MockEdit* edit = it->second;
+    return edit->edit->cursorPosition();
+}
+  
+void API_Edit_SetEditCaretPosition(control_handle handle, int32 pos)
+{
+    LogDbg("API_Edit_SetEditCaretPosition called");
+
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end())
+        return;
+
+    MockEdit* edit = it->second;
+    QLineEdit* w = edit->edit;
+
+    if (pos < 0)
+        pos = 0;
+    if (pos > w->text().length())
+        pos = w->text().length();
+
+    w->setCursorPosition(pos);
+}
+void API_Edit_GetEditSelection(const_control_handle handle, int32* start, int32* end)
+{
+    LogDbg("API_Edit_GetEditSelection called");
+
+    if (start) *start = 0;
+    if (end)   *end   = 0;
+
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(const_cast<control_handle>(handle));
+    if (it == g_edit_map.end())
+        return;
+
+    MockEdit* edit = it->second;
+    QLineEdit* w = edit->edit;
+
+    int s = w->selectionStart();
+    if (s < 0)
+        return;
+
+    int len = w->selectedText().length();
+    if (start) *start = s;
+    if (end)   *end   = s + len;
+} 
+void API_Edit_SetEditSelection(control_handle handle, int32 start, int32 end)
+{
+    LogDbg("API_Edit_SetEditSelection called");
+
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end())
+        return;
+
+    MockEdit* edit = it->second;
+    QLineEdit* w = edit->edit;
+
+    int len = w->text().length();
+    if (start < 0) start = 0;
+    if (end   < 0) end   = 0;
+    if (start > len) start = len;
+    if (end   > len) end   = len;
+
+    int selLen = end - start;
+    if (selLen <= 0) {
+        w->deselect();
+        return;
+    }
+
+    w->setSelection(start, selLen);
+}
+api_bool API_Edit_GetEditSelectedText(const_control_handle handle,
+                                      char16_type* text,
+                                      size_type* len)
+{
+    LogDbg("API_Edit_GetEditSelectedText called");
+
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(const_cast<control_handle>(handle));
+    if (it == g_edit_map.end()) {
+        if (len) *len = 0;
+        return api_false;
+    }
+
+    MockEdit* edit = it->second;
+    QString qsel = edit->edit->selectedText();
+    std::u16string u16 = qsel.toStdU16String();
+
+    if (!text) {
+        if (len) *len = u16.length();
+        return api_true;
+    }
+
+    if (!len || *len == 0) {
+        return api_false;
+    }
+
+    size_type copyLen = std::min(*len - 1, (size_type)u16.length());
+    std::memcpy(text, u16.c_str(), copyLen * sizeof(char16_type));
+    text[copyLen] = 0;
+    *len = copyLen;
+
+    return api_true;
+}
+   api_bool API_Edit_SetEditCompletedEventRoutine(
+	   control_handle handle,
+	   api_handle receiver,
+	   pcl::event_routine routine )
    {
-     //    idem.
-     abort();
+       LogDbg("API_Edit_SetEditCompletedEventRoutine called");
+
+       std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+       auto it = g_edit_map.find(handle);
+       if (it == g_edit_map.end()) {
+	   // We don't know this edit control
+	   return api_false;
+       }
+
+       MockEdit* mockEdit = it->second;
+       mockEdit->editCompletedHandler  = routine;
+       mockEdit->editCompletedReceiver = receiver;
+
+       QLineEdit* lineEdit = mockEdit->edit;
+       if (lineEdit) {
+	   // Clear previous mock connections (same pattern as button click routine)
+	   QObject::disconnect(lineEdit, nullptr, nullptr, nullptr);
+
+	   if (routine) {
+	       // Bridge QLineEdit::editingFinished() to PCL editCompleted event
+	       QObject::connect(lineEdit, &QLineEdit::editingFinished,
+				[mockEdit, lineEdit]() {
+		   if (mockEdit->editCompletedHandler && mockEdit->editCompletedReceiver) {
+		       control_handle h = reinterpret_cast<control_handle>(lineEdit);
+		       mockEdit->editCompletedHandler(mockEdit->editCompletedReceiver, h);
+		   }
+	       });
+	   }
+       }
+
+       return api_true;
    }
 
-   int32          (API_Edit_GetEditCaretPosition)( const_control_handle )
-   {
+api_bool API_Edit_SetReturnPressedEventRoutine(
+        control_handle handle,
+        api_handle receiver,
+        pcl::event_routine routine )
+{
+    LogDbg("API_Edit_SetReturnPressedEventRoutine called");
 
-     abort();
-   }
-   void           (API_Edit_SetEditCaretPosition)( control_handle, int32 )
-   {
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end()) return api_false;
 
-     abort();
-   }
+    MockEdit* edit = it->second;
+    edit->returnPressedHandler  = routine;
+    edit->returnPressedReceiver = receiver;
 
-   void           (API_Edit_GetEditSelection)( const_control_handle, int32*, int32* )
-   {
+    QLineEdit* w = edit->edit;
+    // Do NOT disconnect all events; combine them
+    if (routine)
+        QObject::connect(w, &QLineEdit::returnPressed,
+            [edit, w]() {
+                if (edit->returnPressedHandler && edit->returnPressedReceiver) {
+                    control_handle h = reinterpret_cast<control_handle>(w);
+                    edit->returnPressedHandler(edit->returnPressedReceiver, h);
+                }
+            });
 
-     abort();
-   }
-   void           (API_Edit_SetEditSelection)( control_handle, int32, int32 )
-   {
+    return api_true;
+}
 
-     abort();
-   }
+api_bool API_Edit_SetTextUpdatedEventRoutine(
+        control_handle handle,
+        api_handle receiver,
+        pcl::unicode_event_routine routine )
+{
+    LogDbg("API_Edit_SetTextUpdatedEventRoutine called");
 
-   api_bool       (API_Edit_GetEditSelectedText)( const_control_handle, char16_type*, size_type* )
-   {
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end()) return api_false;
 
-     abort();
-   }
+    MockEdit* edit = it->second;
+    edit->textUpdatedHandler  = routine;
+    edit->textUpdatedReceiver = receiver;
 
-   api_bool       (API_Edit_SetEditCompletedEventRoutine)( control_handle, api_handle, pcl::event_routine )
-   {
+    QLineEdit* w = edit->edit;
 
-     abort();
-   }
-   api_bool       (API_Edit_SetReturnPressedEventRoutine)( control_handle, api_handle, pcl::event_routine )
-   {
+    if (routine)
+        QObject::connect(w, &QLineEdit::textChanged,
+            [edit, w](const QString& qs) {
+                if (edit->textUpdatedHandler && edit->textUpdatedReceiver) {
+                    control_handle h = reinterpret_cast<control_handle>(w);
+                    std::u16string u16 = qs.toStdU16String();
+                    edit->textUpdatedHandler(edit->textUpdatedReceiver,
+                                             h,
+                                             reinterpret_cast<const char16_type*>(u16.c_str()));
+                }
+            });
 
-     abort();
-   }
-   api_bool       (API_Edit_SetTextUpdatedEventRoutine)( control_handle, api_handle, pcl::unicode_event_routine )
-   {
+    return api_true;
+}
 
-     abort();
-   }
-   api_bool       (API_Edit_SetCaretPositionUpdatedEventRoutine)( control_handle, api_handle, pcl::range_event_routine )
-   {
+api_bool API_Edit_SetCaretPositionUpdatedEventRoutine(
+        control_handle handle,
+        api_handle receiver,
+        pcl::range_event_routine routine )
+{
+    LogDbg("API_Edit_SetCaretPositionUpdatedEventRoutine called");
 
-     abort();
-   }
-   api_bool       (API_Edit_SetSelectionUpdatedEventRoutine)( control_handle, api_handle, pcl::range_event_routine )
-   {
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end()) return api_false;
 
-     abort();
-   }
+    MockEdit* edit = it->second;
+    edit->caretPositionUpdatedHandler  = routine;
+    edit->caretPositionUpdatedReceiver = receiver;
 
+    QLineEdit* w = edit->edit;
+
+    if (routine)
+        QObject::connect(w, &QLineEdit::cursorPositionChanged,
+            [edit, w](int oldPos, int newPos) {
+                if (edit->caretPositionUpdatedHandler && edit->caretPositionUpdatedReceiver) {
+                    control_handle h = reinterpret_cast<control_handle>(w);
+                    edit->caretPositionUpdatedHandler(edit->caretPositionUpdatedReceiver,
+                                                      h,
+                                                      oldPos,
+                                                      newPos);
+                }
+            });
+
+    return api_true;
+}
+
+api_bool API_Edit_SetSelectionUpdatedEventRoutine(
+        control_handle handle,
+        api_handle receiver,
+        pcl::range_event_routine routine )
+{
+    LogDbg("API_Edit_SetSelectionUpdatedEventRoutine called");
+
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end()) return api_false;
+
+    MockEdit* edit = it->second;
+    edit->selectionUpdatedHandler  = routine;
+    edit->selectionUpdatedReceiver = receiver;
+
+    QLineEdit* w = edit->edit;
+
+    if (routine)
+        QObject::connect(w, &QLineEdit::selectionChanged,
+            [edit, w]() {
+                if (edit->selectionUpdatedHandler && edit->selectionUpdatedReceiver) {
+                    control_handle h = reinterpret_cast<control_handle>(w);
+                    int start = w->selectionStart();
+                    int len   = w->selectedText().length();
+                    edit->selectionUpdatedHandler(edit->selectionUpdatedReceiver,
+                                                  h,
+                                                  start,
+                                                  start + len);
+                }
+            });
+
+    return api_true;
+}
+  
 // ----------------------------------------------------------------------------
 // TextBoxContext API
 // ----------------------------------------------------------------------------
@@ -10149,7 +10637,7 @@ int32 API_Slider_GetSliderPageSize(const_control_handle)
 void API_Slider_SetSliderPageSize(control_handle, int32)
 {
 
-  abort();
+  //  abort();
 }
 int32 API_Slider_GetSliderTickInterval(const_control_handle)
 {
@@ -10159,7 +10647,7 @@ int32 API_Slider_GetSliderTickInterval(const_control_handle)
 void API_Slider_SetSliderTickInterval(control_handle, int32)
 {
 
-  abort();
+  //  abort();
 }
 int32 API_Slider_GetSliderTickStyle(const_control_handle)
 {
@@ -10169,7 +10657,7 @@ int32 API_Slider_GetSliderTickStyle(const_control_handle)
 void API_Slider_SetSliderTickStyle(control_handle, int32)
 {
 
-  abort();
+  //  abort();
 }
 api_bool API_Slider_GetSliderTrackingEnabled(const_control_handle)
 {
@@ -10181,11 +10669,60 @@ void API_Slider_SetSliderTrackingEnabled(control_handle, api_bool)
 
   abort();
 }
-api_bool API_Slider_SetSliderValueUpdatedEventRoutine(control_handle, api_handle, pcl::value_event_routine)
-{
 
-  abort();
+api_bool API_Slider_SetSliderValueUpdatedEventRoutine(
+        control_handle handle,
+        api_handle receiver,
+        pcl::value_event_routine routine )
+{
+    LogDbg("API_Slider_SetSliderValueUpdatedEventRoutine called");
+
+    if (!handle)
+        return api_false;
+
+    std::lock_guard<std::mutex> lock(g_slider_map_mutex);
+
+    MockSlider* sliderCtrl = nullptr;
+    auto it = g_slider_map.find(handle);
+
+    if (it == g_slider_map.end()) {
+        // Slider wasn't created with API_Slider_CreateSlider.
+        // Try to treat the handle as a QSlider*.
+        QWidget* w = reinterpret_cast<QWidget*>(handle);
+        QSlider* slider = qobject_cast<QSlider*>(w);
+        if (!slider) {
+            LogDbg("ValueUpdatedEventRoutine: handle is not a QSlider");
+            return api_false;
+        }
+
+        sliderCtrl = new MockSlider(false); // orientation doesn't matter
+        sliderCtrl->slider = slider;
+        sliderCtrl->clientHandle = receiver;
+
+        g_slider_map[handle] = sliderCtrl;
+        LogDbg("ValueUpdatedEventRoutine: created new MockSlider entry");
+    }
+    else {
+        sliderCtrl = it->second;
+    }
+
+    // Store the handler
+    sliderCtrl->clientHandle = receiver;
+
+    // Hook Qt → PCL callback
+    QSlider* slider = sliderCtrl->slider;
+
+    QObject::connect(slider, &QSlider::valueChanged,
+                     [sliderCtrl, slider, routine]() {
+        if (routine && sliderCtrl->clientHandle) {
+            control_handle h = reinterpret_cast<control_handle>(slider);
+            routine(sliderCtrl->clientHandle, h, slider->value());
+        }
+    });
+
+    return api_true;
 }
+  
 api_bool API_Slider_SetSliderRangeUpdatedEventRoutine(control_handle, api_handle, pcl::range_event_routine)
 {
 
