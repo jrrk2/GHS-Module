@@ -17,7 +17,22 @@
 #include <QLabel>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QPixmap>
+#include <QImage>
+#include <QSvgRenderer>
+#include <QPainter>
+#include <QFile>
+#include <QBuffer>
+#include <QImageReader>
+#include <QImageWriter>
+#include <QScrollArea>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QRadioButton>
+#include <QLineEdit>
+#include <QTextEdit>
 /*
+#include <>
 #include <>
 #include <>
 #include <>
@@ -46,49 +61,115 @@ static pcl::Mutex s_cfitsio_mutex;
 #define CFITSIO_LOCK
 #endif
 
-// Image handling structure to keep track of created images
-struct MockImage {
-    uint32_t width;
-    uint32_t height;
-    uint32_t channels;
-    uint32_t bitsPerSample;
-    bool isFloat;
-    uint32_t colorSpace;
-    void** pixelData;    // Array of channel pointers
-    double* stats;       // Min/max values per channel
+// Add these to your PCLMockAPI.cpp
+
+#include <QEvent>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QWheelEvent>
+#include <QPaintEvent>
+#include <QResizeEvent>
+#include <QMoveEvent>
+#include <QEnterEvent>
+#include <QEvent>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QWheelEvent>
+#include <QPaintEvent>
+#include <QResizeEvent>
+#include <QMoveEvent>
+
+// ----------------------------------------------------------------------------
+// Event Handler Storage (updated MockControl structure)
+// ----------------------------------------------------------------------------
+
+// Update your existing MockControl structure to include these event handler fields:
+
+struct MockControl {
+    QWidget* widget;
+    api_handle clientHandle;
+    QLayout* layout;
+    
+    // Event handlers - add these to your existing structure
+    pcl::paint_event_routine paintHandler;
+    void* paintReceiver;
+    
+    pcl::resize_event_routine resizeHandler;
+    void* resizeReceiver;
+    
+    pcl::move_event_routine moveHandler;
+    void* moveReceiver;
+    
+    pcl::control_event_routine enterHandler;
+    void* enterReceiver;
+    
+    pcl::control_event_routine leaveHandler;
+    void* leaveReceiver;
+    
+    pcl::mouse_event_routine mouseMoveHandler;
+    void* mouseMoveReceiver;
+    
+    pcl::mouse_button_event_routine mousePressHandler;
+    void* mousePressReceiver;
+    
+    pcl::mouse_button_event_routine mouseReleaseHandler;
+    void* mouseReleaseReceiver;
+    
+    pcl::keyboard_event_routine keyPressHandler;
+    void* keyPressReceiver;
+    
+    pcl::keyboard_event_routine keyReleaseHandler;
+    void* keyReleaseReceiver;
+    
+    pcl::wheel_event_routine wheelHandler;
+    void* wheelReceiver;
+    
+    pcl::control_event_routine destroyHandler;
+    void* destroyReceiver;
+    
+    pcl::control_event_routine showHandler;
+    void* showReceiver;
+    
+    pcl::control_event_routine hideHandler;
+    void* hideReceiver;
+    
+    pcl::control_event_routine closeHandler;
+    void* closeReceiver;
+    
+    pcl::control_event_routine getFocusHandler;
+    void* getFocusReceiver;
+    
+    pcl::control_event_routine loseFocusHandler;
+    void* loseFocusReceiver;
+    
+    MockControl(QWidget* w = nullptr) 
+        : widget(w ? w : new QWidget()),
+          clientHandle(nullptr),
+          layout(nullptr),
+          paintHandler(nullptr), paintReceiver(nullptr),
+          resizeHandler(nullptr), resizeReceiver(nullptr),
+          moveHandler(nullptr), moveReceiver(nullptr),
+          enterHandler(nullptr), enterReceiver(nullptr),
+          leaveHandler(nullptr), leaveReceiver(nullptr),
+          mouseMoveHandler(nullptr), mouseMoveReceiver(nullptr),
+          mousePressHandler(nullptr), mousePressReceiver(nullptr),
+          mouseReleaseHandler(nullptr), mouseReleaseReceiver(nullptr),
+          keyPressHandler(nullptr), keyPressReceiver(nullptr),
+          keyReleaseHandler(nullptr), keyReleaseReceiver(nullptr),
+          wheelHandler(nullptr), wheelReceiver(nullptr),
+          destroyHandler(nullptr), destroyReceiver(nullptr),
+          showHandler(nullptr), showReceiver(nullptr),
+          hideHandler(nullptr), hideReceiver(nullptr),
+          closeHandler(nullptr), closeReceiver(nullptr),
+          getFocusHandler(nullptr), getFocusReceiver(nullptr),
+          loseFocusHandler(nullptr), loseFocusReceiver(nullptr)
+    {
+    }
+    
+    ~MockControl() {
+        // Qt handles widget cleanup
+    }
 };
-
-// Simple structure for tracking open files
-struct MockFileInstance {
-    std::string path;
-    std::string extension;
-    uint32_t selectedImage; // index of selected image
-    std::vector<MockImage*> images; // images in the file
-};
-
-// Mock PixInsight version information
-static uint32_t s_major = 1;
-static uint32_t s_minor = 8;
-static uint32_t s_release = 9;
-static uint32_t s_revision = 1425;
-static uint32_t s_beta = 0;
-static uint32_t s_confidential = 0;
-static uint32_t s_le = 0;
-static char16_type s_language[64] = { 'e', 'n', 'g', 0 };
-static char16_type s_codename[64] = { 'C', 'l', 'o', 'u', 'd', ' ', 'N', 'i', 'n', 'e', 0 };
-  
-// Map to store file format instances
-static std::map<file_format_handle, MockFileInstance*> g_file_instances;
-static std::mutex g_file_instances_mutex;
-
-// Global module handle
-static void* g_module_handle = nullptr;
-
-// Function mapping
-static std::map<std::string, void*> g_function_map;
-static std::mutex g_function_map_mutex;
-static std::map<image_handle, MockImage*> g_image_map;
-static std::mutex g_image_map_mutex;
 
 // Logging settings
 static bool g_debug_logging = false;
@@ -138,19 +219,719 @@ void LogDebug(const std::string& message) {
     } else {
         std::cout << "[PCLMockAPI] " << message << std::endl;
     }
-}
+};
 
-static inline void Log(const std::string& msg) {
+static inline void LogDbg(const std::string& msg) {
     LogDebug(msg.c_str());
 }
 
-static inline void Log(const pcl::String& msg) {
+static inline void LogDbg(const pcl::String& msg) {
     LogDebug(msg.ToUTF8().c_str());
 }
 
-inline void Log(const char* msg) {
+inline void LogDbg(const char* msg) {
     LogDebug(msg);
 }
+
+// ----------------------------------------------------------------------------
+// Custom Event-Aware Widget
+// ----------------------------------------------------------------------------
+
+class PCLWidget : public QWidget {
+  Q_OBJECT
+public:
+    control_handle controlHandle;
+    MockControl* mockControl;
+    
+    PCLWidget(control_handle handle, MockControl* ctrl, QWidget* parent = nullptr)
+        : QWidget(parent), controlHandle(handle), mockControl(ctrl)
+    {
+    }
+    
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        QWidget::paintEvent(event);
+        
+        if (mockControl && mockControl->paintHandler && mockControl->paintReceiver) {
+            mockControl->paintHandler(mockControl->paintReceiver, controlHandle,
+                event->rect().x(), event->rect().y(),
+                event->rect().width(), event->rect().height());
+        }
+    }
+    
+    void resizeEvent(QResizeEvent* event) override {
+        QWidget::resizeEvent(event);
+        
+        if (mockControl && mockControl->resizeHandler && mockControl->resizeReceiver) {
+            mockControl->resizeHandler(mockControl->resizeReceiver, controlHandle,
+                event->size().width(), event->size().height(),
+                event->oldSize().width(), event->oldSize().height());
+        }
+    }
+    
+    void moveEvent(QMoveEvent* event) override {
+        QWidget::moveEvent(event);
+        
+        if (mockControl && mockControl->moveHandler && mockControl->moveReceiver) {
+            mockControl->moveHandler(mockControl->moveReceiver, controlHandle,
+                event->pos().x(), event->pos().y(),
+                event->oldPos().x(), event->oldPos().y());
+        }
+    }
+    
+    void enterEvent(QEvent* event) override {
+        QWidget::enterEvent(event);
+        
+        if (mockControl && mockControl->enterHandler && mockControl->enterReceiver) {
+            mockControl->enterHandler(mockControl->enterReceiver, controlHandle);
+        }
+    }
+    
+    void leaveEvent(QEvent* event) override {
+        QWidget::leaveEvent(event);
+        
+        if (mockControl && mockControl->leaveHandler && mockControl->leaveReceiver) {
+            mockControl->leaveHandler(mockControl->leaveReceiver, controlHandle);
+        }
+    }
+    
+    void mouseMoveEvent(QMouseEvent* event) override {
+        QWidget::mouseMoveEvent(event);
+        
+        if (mockControl && mockControl->mouseMoveHandler && mockControl->mouseMoveReceiver) {
+            mockControl->mouseMoveHandler(mockControl->mouseMoveReceiver, controlHandle,
+                x(), y(),
+                static_cast<uint32_t>(event->buttons()),
+                static_cast<uint32_t>(event->modifiers()));
+        }
+    }
+    
+    void mousePressEvent(QMouseEvent* event) override {
+        QWidget::mousePressEvent(event);
+        
+        if (mockControl && mockControl->mousePressHandler && mockControl->mousePressReceiver) {
+            mockControl->mousePressHandler(mockControl->mousePressReceiver, controlHandle,
+                event->x(), event->y(),
+                static_cast<uint32_t>(event->button()),
+                static_cast<uint32_t>(event->buttons()),
+                static_cast<uint32_t>(event->modifiers()));
+        }
+    }
+    
+    void mouseReleaseEvent(QMouseEvent* event) override {
+        QWidget::mouseReleaseEvent(event);
+        
+        if (mockControl && mockControl->mouseReleaseHandler && mockControl->mouseReleaseReceiver) {
+            mockControl->mouseReleaseHandler(mockControl->mouseReleaseReceiver, controlHandle,
+                event->x(), event->y(),
+                static_cast<uint32_t>(event->button()),
+                static_cast<uint32_t>(event->buttons()),
+                static_cast<uint32_t>(event->modifiers()));
+        }
+    }
+    
+    void keyPressEvent(QKeyEvent* event) override {
+        QWidget::keyPressEvent(event);
+        
+        if (mockControl && mockControl->keyPressHandler && mockControl->keyPressReceiver) {
+            mockControl->keyPressHandler(mockControl->keyPressReceiver, controlHandle,
+                event->key(),
+                static_cast<uint32_t>(event->modifiers()));
+        }
+    }
+    
+    void keyReleaseEvent(QKeyEvent* event) override {
+        QWidget::keyReleaseEvent(event);
+        
+        if (mockControl && mockControl->keyReleaseHandler && mockControl->keyReleaseReceiver) {
+            mockControl->keyReleaseHandler(mockControl->keyReleaseReceiver, controlHandle,
+                event->key(),
+                static_cast<uint32_t>(event->modifiers()));
+        }
+    }
+    
+    void wheelEvent(QWheelEvent* event) override {
+        QWidget::wheelEvent(event);
+        
+        if (mockControl && mockControl->wheelHandler && mockControl->wheelReceiver) {
+            mockControl->wheelHandler(mockControl->wheelReceiver, controlHandle,
+		x(), y(),
+                event->angleDelta().y(),  // Single delta value		      
+                static_cast<uint32_t>(event->buttons()),
+                static_cast<uint32_t>(event->modifiers()));
+        }
+    }
+    
+    void showEvent(QShowEvent* event) override {
+        QWidget::showEvent(event);
+        
+        if (mockControl && mockControl->showHandler && mockControl->showReceiver) {
+            mockControl->showHandler(mockControl->showReceiver, controlHandle);
+        }
+    }
+    
+    void hideEvent(QHideEvent* event) override {
+        QWidget::hideEvent(event);
+        
+        if (mockControl && mockControl->hideHandler && mockControl->hideReceiver) {
+            mockControl->hideHandler(mockControl->hideReceiver, controlHandle);
+        }
+    }
+    
+    void closeEvent(QCloseEvent* event) override {
+        if (mockControl && mockControl->closeHandler && mockControl->closeReceiver) {
+            mockControl->closeHandler(mockControl->closeReceiver, controlHandle);
+        }
+        
+        QWidget::closeEvent(event);
+    }
+    
+    void focusInEvent(QFocusEvent* event) override {
+        QWidget::focusInEvent(event);
+        
+        if (mockControl && mockControl->getFocusHandler && mockControl->getFocusReceiver) {
+            mockControl->getFocusHandler(mockControl->getFocusReceiver, controlHandle);
+        }
+    }
+    
+    void focusOutEvent(QFocusEvent* event) override {
+        QWidget::focusOutEvent(event);
+        
+        if (mockControl && mockControl->loseFocusHandler && mockControl->loseFocusReceiver) {
+            mockControl->loseFocusHandler(mockControl->loseFocusReceiver, controlHandle);
+        }
+    }
+};
+
+class ControlEventFilter : public QObject {
+    Q_OBJECT
+    
+public:
+    control_handle controlHandle;
+    MockControl* mockControl;
+    
+    ControlEventFilter(control_handle handle, MockControl* ctrl, QObject* parent = nullptr)
+        : QObject(parent), controlHandle(handle), mockControl(ctrl)
+    {
+    }
+    
+protected:
+    bool eventFilter(QObject* obj, QEvent* event) override {
+        switch (event->type()) {
+            case QEvent::Paint:
+                if (mockControl->paintHandler && mockControl->paintReceiver) {
+                    QPaintEvent* pe = static_cast<QPaintEvent*>(event);
+                    mockControl->paintHandler(mockControl->paintReceiver, controlHandle,
+                        pe->rect().x(), pe->rect().y(), 
+                        pe->rect().width(), pe->rect().height());
+                    return false; // Let Qt handle default painting too
+                }
+                break;
+                
+            case QEvent::Resize:
+                if (mockControl->resizeHandler && mockControl->resizeReceiver) {
+                    QResizeEvent* re = static_cast<QResizeEvent*>(event);
+                    mockControl->resizeHandler(mockControl->resizeReceiver, controlHandle,
+                        re->size().width(), re->size().height(),
+                        re->oldSize().width(), re->oldSize().height());
+                }
+                break;
+                
+            case QEvent::Enter:
+                if (mockControl->enterHandler && mockControl->enterReceiver) {
+                    mockControl->enterHandler(mockControl->enterReceiver, controlHandle);
+                }
+                break;
+                
+            case QEvent::Leave:
+                if (mockControl->leaveHandler && mockControl->leaveReceiver) {
+                    mockControl->leaveHandler(mockControl->leaveReceiver, controlHandle);
+                }
+                break;
+                
+            case QEvent::MouseMove:
+                if (mockControl->mouseMoveHandler && mockControl->mouseMoveReceiver) {
+                    QMouseEvent* me = static_cast<QMouseEvent*>(event);
+                    mockControl->mouseMoveHandler(mockControl->mouseMoveReceiver, controlHandle,
+                        me->x(), me->y(),
+                        static_cast<uint32>(me->buttons()),
+                        static_cast<uint32>(me->modifiers()));
+                }
+                break;
+                
+            case QEvent::MouseButtonPress:
+                if (mockControl->mousePressHandler && mockControl->mousePressReceiver) {
+                    QMouseEvent* me = static_cast<QMouseEvent*>(event);
+                    mockControl->mousePressHandler(mockControl->mousePressReceiver, controlHandle,
+                        me->x(), me->y(),
+                        static_cast<uint32>(me->button()),
+                        static_cast<uint32>(me->buttons()),
+                        static_cast<uint32>(me->modifiers()));
+                }
+                break;
+                
+            case QEvent::MouseButtonRelease:
+                if (mockControl->mouseReleaseHandler && mockControl->mouseReleaseReceiver) {
+                    QMouseEvent* me = static_cast<QMouseEvent*>(event);
+                    mockControl->mouseReleaseHandler(mockControl->mouseReleaseReceiver, controlHandle,
+                        me->x(), me->y(),
+                        static_cast<uint32>(me->button()),
+                        static_cast<uint32>(me->buttons()),
+                        static_cast<uint32>(me->modifiers()));
+                }
+                break;
+                
+            case QEvent::KeyPress:
+                if (mockControl->keyPressHandler && mockControl->keyPressReceiver) {
+                    QKeyEvent* ke = static_cast<QKeyEvent*>(event);
+                    mockControl->keyPressHandler(mockControl->keyPressReceiver, controlHandle,
+                        ke->key(),
+			static_cast<uint32>(ke->modifiers()));
+                }
+                break;
+                
+            case QEvent::KeyRelease:
+                if (mockControl->keyReleaseHandler && mockControl->keyReleaseReceiver) {
+                    QKeyEvent* ke = static_cast<QKeyEvent*>(event);
+                    mockControl->keyReleaseHandler(mockControl->keyReleaseReceiver, controlHandle,
+                        ke->key(),
+		        static_cast<uint32>(ke->modifiers()));
+                }
+                break;
+                
+            case QEvent::Wheel:
+                if (mockControl->wheelHandler && mockControl->wheelReceiver) {
+                    QWheelEvent* we = static_cast<QWheelEvent*>(event);
+                    mockControl->wheelHandler(mockControl->wheelReceiver, controlHandle,
+                        we->position().x(), we->position().y(),
+                        we->angleDelta().y(),
+                        static_cast<uint32>(we->buttons()),
+                        static_cast<uint32>(we->modifiers()));
+                }
+                break;
+                
+            default:
+                break;
+        }
+        
+        return QObject::eventFilter(obj, event);
+    }
+};
+
+// ----------------------------------------------------------------------------
+// Helper to replace standard widget with event-aware widget
+// ----------------------------------------------------------------------------
+
+static void EnableEvents(control_handle handle, MockControl* ctrl) {
+    if (!ctrl) {
+        LogDebug("EnableEvents: null ctrl");
+        return;
+    }
+    
+    if (!ctrl->widget) {
+        LogDebug("EnableEvents: null widget - this shouldn't happen");
+        return;
+    }
+    
+    LogDebug("EnableEvents: installing event filter on widget");
+    
+    // Create and install an event filter instead of replacing the widget
+    ControlEventFilter* filter = new ControlEventFilter(handle, ctrl, ctrl->widget);
+    ctrl->widget->installEventFilter(filter);
+    
+    LogDebug("EnableEvents: event filter installed successfully");
+}  
+
+// ----------------------------------------------------------------------------
+// Event Handler Registration Functions
+// ----------------------------------------------------------------------------
+
+// Global map to track all controls
+static std::map<control_handle, MockControl*> g_control_map;
+static std::mutex g_control_map_mutex;
+
+api_bool API_Control_SetDestroyEventRoutine(control_handle handle, api_handle receiver,
+                                            pcl::control_event_routine handler)
+{
+    LogDbg("SetDestroyEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->destroyHandler = handler;
+    ctrl->destroyReceiver = receiver;
+    
+    if (handler) {
+        QObject::connect(ctrl->widget, &QObject::destroyed, [ctrl, handle]() {
+            if (ctrl->destroyHandler && ctrl->destroyReceiver) {
+                ctrl->destroyHandler(ctrl->destroyReceiver, handle);
+            }
+        });
+    }
+    
+    return api_true;
+}
+
+api_bool API_Control_SetShowEventRoutine(control_handle handle, api_handle receiver,
+                                         pcl::control_event_routine handler)
+{
+    LogDbg("SetShowEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->showHandler = handler;
+    ctrl->showReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetHideEventRoutine(control_handle handle, api_handle receiver,
+                                         pcl::control_event_routine handler)
+{
+    LogDbg("SetHideEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->hideHandler = handler;
+    ctrl->hideReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetCloseEventRoutine(control_handle handle, api_handle receiver,
+                                          pcl::control_event_routine handler)
+{
+    LogDbg("SetCloseEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->closeHandler = handler;
+    ctrl->closeReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetGetFocusEventRoutine(control_handle handle, api_handle receiver,
+                                             pcl::control_event_routine handler)
+{
+    LogDbg("SetGetFocusEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->getFocusHandler = handler;
+    ctrl->getFocusReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetLoseFocusEventRoutine(control_handle handle, api_handle receiver,
+                                              pcl::control_event_routine handler)
+{
+    LogDbg("SetLoseFocusEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->loseFocusHandler = handler;
+    ctrl->loseFocusReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetEnterEventRoutine(control_handle handle, api_handle receiver,
+                                          pcl::control_event_routine handler)
+{
+    LogDbg("SetEnterEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->enterHandler = handler;
+    ctrl->enterReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetLeaveEventRoutine(control_handle handle, api_handle receiver,
+                                          pcl::control_event_routine handler)
+{
+    LogDbg("SetLeaveEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->leaveHandler = handler;
+    ctrl->leaveReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetMoveEventRoutine(control_handle handle, api_handle receiver,
+                                         pcl::move_event_routine handler)
+{
+    LogDbg("SetMoveEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->moveHandler = handler;
+    ctrl->moveReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetResizeEventRoutine(control_handle handle, api_handle receiver,
+                                           pcl::resize_event_routine handler)
+{
+    LogDbg("SetResizeEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->resizeHandler = handler;
+    ctrl->resizeReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetPaintEventRoutine(control_handle handle, api_handle receiver,
+                                          pcl::paint_event_routine handler)
+{
+    LogDbg("SetPaintEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->paintHandler = handler;
+    ctrl->paintReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetKeyPressEventRoutine(control_handle handle, api_handle receiver,
+                                             pcl::keyboard_event_routine handler)
+{
+    LogDbg("SetKeyPressEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->keyPressHandler = handler;
+    ctrl->keyPressReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetKeyReleaseEventRoutine(control_handle handle, api_handle receiver,
+                                               pcl::keyboard_event_routine handler)
+{
+    LogDbg("SetKeyReleaseEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->keyReleaseHandler = handler;
+    ctrl->keyReleaseReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetMouseMoveEventRoutine(control_handle handle, api_handle receiver,
+                                              pcl::mouse_event_routine handler)
+{
+    LogDbg("SetMouseMoveEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->mouseMoveHandler = handler;
+    ctrl->mouseMoveReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetMouseDoubleClickEventRoutine(control_handle handle, api_handle receiver,
+                                                     pcl::mouse_event_routine handler)
+{
+    LogDbg("SetMouseDoubleClickEventRoutine called");
+    // TODO: Add double-click handler support
+    return api_true;
+}
+
+api_bool API_Control_SetMousePressEventRoutine(control_handle handle, api_handle receiver,
+                                               pcl::mouse_button_event_routine handler)
+{
+    LogDbg("SetMousePressEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->mousePressHandler = handler;
+    ctrl->mousePressReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetMouseReleaseEventRoutine(control_handle handle, api_handle receiver,
+                                                 pcl::mouse_button_event_routine handler)
+{
+    LogDbg("SetMouseReleaseEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->mouseReleaseHandler = handler;
+    ctrl->mouseReleaseReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+api_bool API_Control_SetWheelEventRoutine(control_handle handle, api_handle receiver,
+                                          pcl::wheel_event_routine handler)
+{
+    LogDbg("SetWheelEventRoutine called");
+    
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end()) return api_false;
+    
+    MockControl* ctrl = it->second;
+    ctrl->wheelHandler = handler;
+    ctrl->wheelReceiver = receiver;
+    
+    EnableEvents(handle, ctrl);
+    return api_true;
+}
+
+// Stub implementations for drag/drop
+api_bool API_Control_SetFileDragEventRoutine(control_handle, api_handle, pcl::file_drag_event_handler)
+{
+    return api_true;
+}
+
+api_bool API_Control_SetFileDropEventRoutine(control_handle, api_handle, pcl::file_drag_event_handler)
+{
+    return api_true;
+}
+
+api_bool API_Control_SetViewDragEventRoutine(control_handle, api_handle, pcl::view_drag_event_handler)
+{
+    return api_true;
+}
+
+api_bool API_Control_SetViewDropEventRoutine(control_handle, api_handle, pcl::view_drag_event_handler)
+{
+    return api_true;
+}
+
+api_bool API_Control_SetChildCreateEventRoutine(control_handle, api_handle, pcl::child_event_routine)
+{
+    return api_true;
+}
+
+api_bool API_Control_SetChildDestroyEventRoutine(control_handle, api_handle, pcl::child_event_routine)
+{
+    return api_true;
+}
+
+// ----------------------------------------------------------------------------
+// Event Filter for Control Events
+// ----------------------------------------------------------------------------
+
+// Image handling structure to keep track of created images
+struct MockImage {
+    uint32_t width;
+    uint32_t height;
+    uint32_t channels;
+    uint32_t bitsPerSample;
+    bool isFloat;
+    uint32_t colorSpace;
+    void** pixelData;    // Array of channel pointers
+    double* stats;       // Min/max values per channel
+};
+
+// Simple structure for tracking open files
+struct MockFileInstance {
+    std::string path;
+    std::string extension;
+    uint32_t selectedImage; // index of selected image
+    std::vector<MockImage*> images; // images in the file
+};
+
+// Mock PixInsight version information
+static uint32_t s_major = 1;
+static uint32_t s_minor = 8;
+static uint32_t s_release = 9;
+static uint32_t s_revision = 1425;
+static uint32_t s_beta = 0;
+static uint32_t s_confidential = 0;
+static uint32_t s_le = 0;
+static char16_type s_language[64] = { 'e', 'n', 'g', 0 };
+static char16_type s_codename[64] = { 'C', 'l', 'o', 'u', 'd', ' ', 'N', 'i', 'n', 'e', 0 };
+  
+// Map to store file format instances
+static std::map<file_format_handle, MockFileInstance*> g_file_instances;
+static std::mutex g_file_instances_mutex;
+
+// Global module handle
+static void* g_module_handle = nullptr;
+
+// Function mapping
+static std::map<std::string, void*> g_function_map;
+static std::mutex g_function_map_mutex;
+static std::map<image_handle, MockImage*> g_image_map;
+static std::mutex g_image_map_mutex;
   
 // Create a stub function for missing functions
 // We'll use a simple global function that just returns nullptr
@@ -889,7 +1670,7 @@ control_handle API_Button_CreateToolButton(api_handle hModule, api_handle hClien
                                            api_bool checkable, control_handle parent, uint32 flags)
 {
     auto textStr = text ? Utf16ToUtf8(text) : "";
-    Log("CreateToolButton called, text=" + textStr);
+    LogDbg("CreateToolButton called, text=" + textStr);
     
     MockButton* btn = new MockButton(true);
     btn->clientHandle = hClient;
@@ -934,7 +1715,7 @@ control_handle API_Button_CreatePushButton(api_handle hModule, api_handle hClien
                                            control_handle parent, uint32 flags)
 {
     auto textStr = text ? Utf16ToUtf8(text) : "";
-    Log("CreatePushButton called, text=" + textStr);
+    LogDbg("CreatePushButton called, text=" + textStr);
     
     MockButton* btn = new MockButton(false);
     btn->clientHandle = hClient;
@@ -970,7 +1751,7 @@ control_handle API_Button_CreatePushButton(api_handle hModule, api_handle hClien
 
 api_bool API_Button_GetButtonText(const_control_handle handle, char16_type* text, size_type* len)
 {
-    Log("GetButtonText called");
+    LogDbg("GetButtonText called");
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(const_cast<control_handle>(handle));
@@ -1007,7 +1788,7 @@ api_bool API_Button_GetButtonText(const_control_handle handle, char16_type* text
 void API_Button_SetButtonText(control_handle handle, const char16_type* text)
 {
     auto textStr = text ? Utf16ToUtf8(text) : "";
-    Log("SetButtonText called, text=" + textStr);
+    LogDbg("SetButtonText called, text=" + textStr);
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(handle);
@@ -1023,7 +1804,7 @@ void API_Button_SetButtonText(control_handle handle, const char16_type* text)
 
 bitmap_handle API_Button_GetButtonIcon(const_control_handle handle)
 {
-    Log("GetButtonIcon called");
+    LogDbg("GetButtonIcon called");
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(const_cast<control_handle>(handle));
@@ -1042,7 +1823,7 @@ bitmap_handle API_Button_GetButtonIcon(const_control_handle handle)
 
 void API_Button_SetButtonIcon(control_handle handle, const_bitmap_handle icon)
 {
-    Log("SetButtonIcon called");
+    LogDbg("SetButtonIcon called");
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(handle);
@@ -1061,7 +1842,7 @@ void API_Button_SetButtonIcon(control_handle handle, const_bitmap_handle icon)
 
 void API_Button_GetButtonIconSize(const_control_handle handle, int32* w, int32* h)
 {
-    Log("GetButtonIconSize called");
+    LogDbg("GetButtonIconSize called");
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(const_cast<control_handle>(handle));
@@ -1081,7 +1862,7 @@ void API_Button_GetButtonIconSize(const_control_handle handle, int32* w, int32* 
 
 void API_Button_SetButtonIconSize(control_handle handle, int32 w, int32 h)
 {
-    Log("SetButtonIconSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
+    LogDbg("SetButtonIconSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(handle);
@@ -1097,7 +1878,7 @@ void API_Button_SetButtonIconSize(control_handle handle, int32 w, int32 h)
 
 api_bool API_Button_GetToolButtonCheckable(const_control_handle handle)
 {
-    Log("GetToolButtonCheckable called");
+    LogDbg("GetToolButtonCheckable called");
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(const_cast<control_handle>(handle));
@@ -1110,7 +1891,7 @@ api_bool API_Button_GetToolButtonCheckable(const_control_handle handle)
 
 void API_Button_SetToolButtonCheckable(control_handle handle, api_bool checkable)
 {
-    Log("SetToolButtonCheckable called, checkable=" + std::to_string(checkable));
+    LogDbg("SetToolButtonCheckable called, checkable=" + std::to_string(checkable));
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(handle);
@@ -1128,7 +1909,7 @@ void API_Button_SetToolButtonCheckable(control_handle handle, api_bool checkable
 
 uint32 API_Button_GetButtonChecked(const_control_handle handle)
 {
-    Log("GetButtonChecked called");
+    LogDbg("GetButtonChecked called");
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(const_cast<control_handle>(handle));
@@ -1146,7 +1927,7 @@ uint32 API_Button_GetButtonChecked(const_control_handle handle)
 
 void API_Button_SetButtonChecked(control_handle handle, uint32 checked)
 {
-    Log("SetButtonChecked called, checked=" + std::to_string(checked));
+    LogDbg("SetButtonChecked called, checked=" + std::to_string(checked));
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(handle);
@@ -1165,7 +1946,7 @@ void API_Button_SetButtonChecked(control_handle handle, uint32 checked)
 api_bool API_Button_SetButtonClickEventRoutine(control_handle handle, api_handle receiver,
                                                 pcl::button_click_event_routine handler)
 {
-    Log("SetButtonClickEventRoutine called");
+    LogDbg("SetButtonClickEventRoutine called");
     
     std::lock_guard<std::mutex> lock(g_button_map_mutex);
     auto it = g_button_map.find(handle);
@@ -1547,62 +2328,6 @@ void API_SpinBox_SetSpinBoxReadOnly(control_handle handle, api_bool readOnly)
     
     it->second->spinBox->setReadOnly(readOnly != 0);
 }
-
-// ----------------------------------------------------------------------------
-// Control Mock Implementation
-// ----------------------------------------------------------------------------
-
-struct MockControl {
-    QWidget* widget;
-    api_handle clientHandle;
-    
-    // Sizer/Layout
-    QLayout* layout;
-    
-    // Event handlers
-    pcl::paint_event_routine paintHandler;
-    void* paintReceiver;
-    
-    pcl::resize_event_routine resizeHandler;
-    void* resizeReceiver;
-    
-    pcl::control_event_routine enterHandler;
-    void* enterReceiver;
-    
-    pcl::control_event_routine leaveHandler;
-    void* leaveReceiver;
-    
-    pcl::mouse_event_routine mouseMoveHandler;
-    void* mouseMoveReceiver;
-    
-    pcl::mouse_button_event_routine mousePressHandler;
-    void* mousePressReceiver;
-    
-    pcl::mouse_button_event_routine mouseReleaseHandler;
-    void* mouseReleaseReceiver;
-    
-    MockControl(QWidget* w = nullptr) 
-        : widget(w ? w : new QWidget()),
-          clientHandle(nullptr),
-          layout(nullptr),
-          paintHandler(nullptr), paintReceiver(nullptr),
-          resizeHandler(nullptr), resizeReceiver(nullptr),
-          enterHandler(nullptr), enterReceiver(nullptr),
-          leaveHandler(nullptr), leaveReceiver(nullptr),
-          mouseMoveHandler(nullptr), mouseMoveReceiver(nullptr),
-          mousePressHandler(nullptr), mousePressReceiver(nullptr),
-          mouseReleaseHandler(nullptr), mouseReleaseReceiver(nullptr)
-    {
-    }
-    
-    ~MockControl() {
-        // Qt parent ownership handles deletion
-    }
-};
-
-// Global map to track all controls
-static std::map<control_handle, MockControl*> g_control_map;
-static std::mutex g_control_map_mutex;
 
 // Helper to get or create MockControl for any widget
 static MockControl* GetOrCreateMockControl(control_handle handle) {
@@ -2550,6 +3275,1121 @@ const char* API_UI_GetUIObjectType(api_handle handle)
     return widget->metaObject()->className();
 }
 
+// ----------------------------------------------------------------------------
+// Bitmap Mock Implementation
+// ----------------------------------------------------------------------------
+
+struct MockBitmap {
+    QPixmap pixmap;
+    api_handle moduleHandle;
+    double devicePixelRatio;
+    
+    MockBitmap(api_handle hModule) 
+        : moduleHandle(hModule),
+          devicePixelRatio(1.0)
+    {
+    }
+    
+    MockBitmap(api_handle hModule, int width, int height)
+        : pixmap(width, height),
+          moduleHandle(hModule),
+          devicePixelRatio(1.0)
+    {
+        pixmap.fill(Qt::transparent);
+    }
+    
+    MockBitmap(api_handle hModule, const QPixmap& pm)
+        : pixmap(pm),
+          moduleHandle(hModule),
+          devicePixelRatio(1.0)
+    {
+    }
+    
+    ~MockBitmap() {
+        // QPixmap handles its own memory
+    }
+};
+
+// Global map to track bitmaps
+static std::map<bitmap_handle, MockBitmap*> g_bitmap_map;
+static std::mutex g_bitmap_map_mutex;
+
+// Helper to get bitmap from handle
+static MockBitmap* GetBitmap(bitmap_handle handle) {
+    if (!handle) return nullptr;
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    auto it = g_bitmap_map.find(handle);
+    if (it != g_bitmap_map.end()) {
+        return it->second;
+    }
+    return nullptr;
+}
+
+// ----------------------------------------------------------------------------
+// BitmapContext API Implementation
+// ----------------------------------------------------------------------------
+
+bitmap_handle API_Bitmap_CreateBitmap(api_handle hModule, int32 width, int32 height, void* data)
+{
+    LogDbg("CreateBitmap called with dimensions: " + std::to_string(width) + "x" + std::to_string(height));
+    
+    if (width <= 0 || height <= 0) {
+        return nullptr;
+    }
+    
+    MockBitmap* bitmap = new MockBitmap(hModule, width, height);
+    
+    // If data is provided, copy it into the pixmap
+    if (data) {
+        QImage image(static_cast<const uchar*>(data), width, height, 
+                    width * 4, QImage::Format_ARGB32);
+        bitmap->pixmap = QPixmap::fromImage(image);
+    }
+    
+    bitmap_handle handle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[handle] = bitmap;
+    
+    return handle;
+}
+
+bitmap_handle API_Bitmap_CreateBitmapXPM(api_handle hModule, const char** xpm)
+{
+    LogDbg("CreateBitmapXPM called");
+    
+    if (!xpm) {
+        return nullptr;
+    }
+    
+    QPixmap pixmap(xpm);
+    if (pixmap.isNull()) {
+        LogDbg("Failed to create bitmap from XPM data");
+        return nullptr;
+    }
+    
+    MockBitmap* bitmap = new MockBitmap(hModule, pixmap);
+    bitmap_handle handle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[handle] = bitmap;
+    
+    return handle;
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromFile(api_handle hModule, const char16_type* filePath)
+{
+    if (!filePath) {
+        LogDbg("CreateBitmapFromFile: null file path");
+        return nullptr;
+    }
+    
+    QString qFilePath = QString::fromUtf16(reinterpret_cast<const ushort*>(filePath));
+    LogDbg("CreateBitmapFromFile called with path: " + qFilePath.toStdString());
+    
+    QPixmap pixmap;
+    
+    // Check if it's an SVG file
+    QString lowerPath = qFilePath.toLower();
+    if (lowerPath.endsWith(".svg") || lowerPath.endsWith(".svgz")) {
+        // Load SVG - render at a reasonable default size
+        QSvgRenderer renderer(qFilePath);
+        if (!renderer.isValid()) {
+            LogDbg("Failed to load SVG file: " + qFilePath.toStdString());
+            return nullptr;
+        }
+        
+        // Use default size from SVG, or 256x256 if not specified
+        QSize size = renderer.defaultSize();
+        if (!size.isValid() || size.width() <= 0 || size.height() <= 0) {
+            size = QSize(256, 256);
+        }
+        
+        pixmap = QPixmap(size);
+        pixmap.fill(Qt::transparent);
+        
+        QPainter painter(&pixmap);
+        renderer.render(&painter);
+    } else {
+        // Load regular image file
+        pixmap.load(qFilePath);
+    }
+    
+    if (pixmap.isNull()) {
+        LogDbg("Failed to load bitmap from file: " + qFilePath.toStdString());
+	return API_Bitmap_CreateBitmap(hModule, 256, 256, nullptr);
+    }
+    
+    MockBitmap* bitmap = new MockBitmap(hModule, pixmap);
+    bitmap_handle handle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[handle] = bitmap;
+    
+    LogDbg("Successfully loaded bitmap: " + std::to_string(pixmap.width()) + "x" + 
+             std::to_string(pixmap.height()));
+    
+    return handle;
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromFile8(api_handle hModule, const char* filePath)
+{
+    if (!filePath) {
+        return nullptr;
+    }
+    
+    // Convert UTF-8 to UTF-16
+    QString qFilePath = QString::fromUtf8(filePath);
+    std::u16string u16path = qFilePath.toStdU16String();
+    
+    return API_Bitmap_CreateBitmapFromFile(hModule, 
+        reinterpret_cast<const char16_type*>(u16path.c_str()));
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromData(api_handle hModule, const void* data, 
+                                              size_type size, const char* format, uint32 flags)
+{
+    LogDbg("CreateBitmapFromData called");
+    
+    if (!data || size == 0) {
+        return nullptr;
+    }
+    
+    QByteArray byteArray(static_cast<const char*>(data), size);
+    QPixmap pixmap;
+    
+    if (format && format[0]) {
+        pixmap.loadFromData(byteArray, format);
+    } else {
+        // Auto-detect format
+        pixmap.loadFromData(byteArray);
+    }
+    
+    if (pixmap.isNull()) {
+        LogDbg("Failed to create bitmap from data");
+        return nullptr;
+    }
+    
+    MockBitmap* bitmap = new MockBitmap(hModule, pixmap);
+    bitmap_handle handle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[handle] = bitmap;
+    
+    return handle;
+}
+
+bitmap_handle API_Bitmap_CreateEmptyBitmap(api_handle hModule)
+{
+    LogDbg("CreateEmptyBitmap called");
+    
+    MockBitmap* bitmap = new MockBitmap(hModule);
+    bitmap_handle handle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[handle] = bitmap;
+    
+    return handle;
+}
+
+bitmap_handle API_Bitmap_CloneBitmap(api_handle hModule, const_bitmap_handle source)
+{
+    LogDbg("CloneBitmap called");
+    
+    MockBitmap* srcBitmap = GetBitmap(const_cast<bitmap_handle>(source));
+    if (!srcBitmap) {
+        return nullptr;
+    }
+    
+    MockBitmap* bitmap = new MockBitmap(hModule, srcBitmap->pixmap.copy());
+    bitmap->devicePixelRatio = srcBitmap->devicePixelRatio;
+    
+    bitmap_handle handle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[handle] = bitmap;
+    
+    return handle;
+}
+
+bitmap_handle API_Bitmap_CloneBitmapRect(api_handle hModule, const_bitmap_handle source,
+                                         int32 x, int32 y, int32 width, int32 height)
+{
+    LogDbg("CloneBitmapRect called");
+    
+    MockBitmap* srcBitmap = GetBitmap(const_cast<bitmap_handle>(source));
+    if (!srcBitmap) {
+        return nullptr;
+    }
+    
+    QPixmap cropped = srcBitmap->pixmap.copy(x, y, width, height);
+    if (cropped.isNull()) {
+        return nullptr;
+    }
+    
+    MockBitmap* bitmap = new MockBitmap(hModule, cropped);
+    bitmap->devicePixelRatio = srcBitmap->devicePixelRatio;
+    
+    bitmap_handle handle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[handle] = bitmap;
+    
+    return handle;
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromSVG(api_handle hModule, const char* svgSource,
+                                             int32 width, int32 height, uint32 flags)
+{
+    LogDbg("CreateBitmapFromSVG called");
+    
+    if (!svgSource || width <= 0 || height <= 0) {
+        return nullptr;
+    }
+    
+    QByteArray svgData(svgSource);
+    QSvgRenderer renderer(svgData);
+    
+    if (!renderer.isValid()) {
+        LogDbg("Failed to parse SVG data");
+        return nullptr;
+    }
+    
+    QPixmap pixmap(width, height);
+    pixmap.fill(Qt::transparent);
+    
+    QPainter painter(&pixmap);
+    renderer.render(&painter);
+    
+    MockBitmap* bitmap = new MockBitmap(hModule, pixmap);
+    bitmap_handle handle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[handle] = bitmap;
+    
+    return handle;
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromSVGFile(api_handle hModule, const char16_type* filePath,
+                                                 int32 width, int32 height, uint32 flags)
+{
+    if (!filePath) {
+        return nullptr;
+    }
+    
+    QString qFilePath = QString::fromUtf16(reinterpret_cast<const ushort*>(filePath));
+    LogDbg("CreateBitmapFromSVGFile called with path: " + qFilePath.toStdString());
+    
+    QSvgRenderer renderer(qFilePath);
+    if (!renderer.isValid()) {
+        LogDbg("Failed to load SVG file: " + qFilePath.toStdString());
+        return nullptr;
+    }
+    
+    // Use provided size or default size from SVG
+    QSize size(width, height);
+    if (width <= 0 || height <= 0) {
+        size = renderer.defaultSize();
+        if (!size.isValid() || size.width() <= 0 || size.height() <= 0) {
+            size = QSize(256, 256);
+        }
+    }
+    
+    QPixmap pixmap(size);
+    pixmap.fill(Qt::transparent);
+    
+    QPainter painter(&pixmap);
+    renderer.render(&painter);
+    
+    MockBitmap* bitmap = new MockBitmap(hModule, pixmap);
+    bitmap_handle handle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[handle] = bitmap;
+    
+    return handle;
+}
+
+int32 API_Bitmap_GetBitmapFormat(bitmap_handle handle)
+{
+    MockBitmap* bitmap = GetBitmap(handle);
+    if (!bitmap) {
+        return -1;
+    }
+    
+    // Return Qt image format
+    // 0 = Invalid, 1 = Mono, 2 = MonoLSB, 3 = Indexed8, 4 = RGB32, 5 = ARGB32, etc.
+    QImage image = bitmap->pixmap.toImage();
+    return static_cast<int32>(image.format());
+}
+
+void API_Bitmap_SetBitmapFormat(bitmap_handle handle, int32 format)
+{
+    MockBitmap* bitmap = GetBitmap(handle);
+    if (!bitmap) {
+        return;
+    }
+    
+    QImage image = bitmap->pixmap.toImage();
+    QImage converted = image.convertToFormat(static_cast<QImage::Format>(format));
+    bitmap->pixmap = QPixmap::fromImage(converted);
+}
+
+unsigned int* API_Bitmap_GetBitmapScanLine(bitmap_handle handle, int32 y)
+{
+    MockBitmap* bitmap = GetBitmap(handle);
+    if (!bitmap) {
+        return nullptr;
+    }
+    
+    QImage image = bitmap->pixmap.toImage();
+    if (y < 0 || y >= image.height()) {
+        return nullptr;
+    }
+    
+    // Return pointer to scan line
+    // Note: This is dangerous - the pointer becomes invalid if the bitmap is modified
+    return reinterpret_cast<unsigned int*>(image.scanLine(y));
+}
+
+api_bool API_Bitmap_GetBitmapDimensions(const_bitmap_handle handle, int32* width, int32* height)
+{
+    MockBitmap* bitmap = GetBitmap(const_cast<bitmap_handle>(handle));
+    if (!bitmap) {
+        if (width) *width = 0;
+        if (height) *height = 0;
+        return api_false;
+    }
+    
+    if (width) *width = bitmap->pixmap.width();
+    if (height) *height = bitmap->pixmap.height();
+    
+    return api_true;
+}
+
+api_bool API_Bitmap_IsEmptyBitmap(const_bitmap_handle handle)
+{
+    MockBitmap* bitmap = GetBitmap(const_cast<bitmap_handle>(handle));
+    if (!bitmap) {
+        return api_true;
+    }
+    
+    return bitmap->pixmap.isNull() ? api_true : api_false;
+}
+
+uint32 API_Bitmap_GetBitmapPixel(const_bitmap_handle handle, int32 x, int32 y)
+{
+    MockBitmap* bitmap = GetBitmap(const_cast<bitmap_handle>(handle));
+    if (!bitmap) {
+        return 0;
+    }
+    
+    QImage image = bitmap->pixmap.toImage();
+    if (x < 0 || x >= image.width() || y < 0 || y >= image.height()) {
+        return 0;
+    }
+    
+    QRgb pixel = image.pixel(x, y);
+    return static_cast<uint32>(pixel);
+}
+
+void API_Bitmap_SetBitmapPixel(bitmap_handle handle, int32 x, int32 y, uint32 color)
+{
+    MockBitmap* bitmap = GetBitmap(handle);
+    if (!bitmap) {
+        return;
+    }
+    
+    QImage image = bitmap->pixmap.toImage();
+    if (x < 0 || x >= image.width() || y < 0 || y >= image.height()) {
+        return;
+    }
+    
+    image.setPixel(x, y, static_cast<QRgb>(color));
+    bitmap->pixmap = QPixmap::fromImage(image);
+}
+
+bitmap_handle API_Bitmap_MirroredBitmap(const_bitmap_handle handle, api_bool horizontal, api_bool vertical)
+{
+    MockBitmap* srcBitmap = GetBitmap(const_cast<bitmap_handle>(handle));
+    if (!srcBitmap) {
+        return nullptr;
+    }
+    
+    QImage image = srcBitmap->pixmap.toImage();
+    QImage mirrored = image.mirrored(horizontal != 0, vertical != 0);
+    
+    MockBitmap* bitmap = new MockBitmap(srcBitmap->moduleHandle, QPixmap::fromImage(mirrored));
+    bitmap->devicePixelRatio = srcBitmap->devicePixelRatio;
+    
+    bitmap_handle newHandle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[newHandle] = bitmap;
+    
+    return newHandle;
+}
+
+bitmap_handle API_Bitmap_ScaledBitmap(const_bitmap_handle handle, int32 width, int32 height, 
+                                      api_bool smoothScaling)
+{
+    MockBitmap* srcBitmap = GetBitmap(const_cast<bitmap_handle>(handle));
+    if (!srcBitmap || width <= 0 || height <= 0) {
+        return nullptr;
+    }
+    
+    Qt::TransformationMode mode = smoothScaling ? Qt::SmoothTransformation : Qt::FastTransformation;
+    QPixmap scaled = srcBitmap->pixmap.scaled(width, height, Qt::IgnoreAspectRatio, mode);
+    
+    MockBitmap* bitmap = new MockBitmap(srcBitmap->moduleHandle, scaled);
+    bitmap->devicePixelRatio = srcBitmap->devicePixelRatio;
+    
+    bitmap_handle newHandle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[newHandle] = bitmap;
+    
+    return newHandle;
+}
+
+bitmap_handle API_Bitmap_RotatedBitmap(const_bitmap_handle handle, double angleDegrees, 
+                                       api_bool smoothRotation)
+{
+    MockBitmap* srcBitmap = GetBitmap(const_cast<bitmap_handle>(handle));
+    if (!srcBitmap) {
+        return nullptr;
+    }
+    
+    QTransform transform;
+    transform.rotate(angleDegrees);
+    
+    Qt::TransformationMode mode = smoothRotation ? Qt::SmoothTransformation : Qt::FastTransformation;
+    QPixmap rotated = srcBitmap->pixmap.transformed(transform, mode);
+    
+    MockBitmap* bitmap = new MockBitmap(srcBitmap->moduleHandle, rotated);
+    bitmap->devicePixelRatio = srcBitmap->devicePixelRatio;
+    
+    bitmap_handle newHandle = reinterpret_cast<bitmap_handle>(bitmap);
+    
+    std::lock_guard<std::mutex> lock(g_bitmap_map_mutex);
+    g_bitmap_map[newHandle] = bitmap;
+    
+    return newHandle;
+}
+
+api_bool API_Bitmap_LoadBitmap(bitmap_handle handle, const char16_type* filePath)
+{
+    MockBitmap* bitmap = GetBitmap(handle);
+    if (!bitmap || !filePath) {
+        return api_false;
+    }
+    
+    QString qFilePath = QString::fromUtf16(reinterpret_cast<const ushort*>(filePath));
+    
+    bool success = bitmap->pixmap.load(qFilePath);
+    
+    LogDbg(success ? "Successfully loaded bitmap from: " : "Failed to load bitmap from: " + 
+             qFilePath.toStdString());
+    
+    return success ? api_true : api_false;
+}
+
+api_bool API_Bitmap_SaveBitmap(const_bitmap_handle handle, const char16_type* filePath, int32 quality)
+{
+    MockBitmap* bitmap = GetBitmap(const_cast<bitmap_handle>(handle));
+    if (!bitmap || !filePath) {
+        return api_false;
+    }
+    
+    QString qFilePath = QString::fromUtf16(reinterpret_cast<const ushort*>(filePath));
+    
+    bool success = bitmap->pixmap.save(qFilePath, nullptr, quality);
+    
+    LogDbg(success ? "Successfully saved bitmap to: " : "Failed to save bitmap to: " + 
+             qFilePath.toStdString());
+    
+    return success ? api_true : api_false;
+}
+
+api_bool API_Bitmap_LoadBitmapData(bitmap_handle handle, const void* data, size_type size,
+                                   const char* format, uint32 flags)
+{
+    MockBitmap* bitmap = GetBitmap(handle);
+    if (!bitmap || !data || size == 0) {
+        return api_false;
+    }
+    
+    QByteArray byteArray(static_cast<const char*>(data), size);
+    
+    bool success;
+    if (format && format[0]) {
+        success = bitmap->pixmap.loadFromData(byteArray, format);
+    } else {
+        success = bitmap->pixmap.loadFromData(byteArray);
+    }
+    
+    return success ? api_true : api_false;
+}
+
+void API_Bitmap_CopyBitmap(bitmap_handle dest, int32 destX, int32 destY,
+                           const_bitmap_handle source, int32 srcX, int32 srcY,
+                           int32 width, int32 height)
+{
+    MockBitmap* destBitmap = GetBitmap(dest);
+    MockBitmap* srcBitmap = GetBitmap(const_cast<bitmap_handle>(source));
+    
+    if (!destBitmap || !srcBitmap) {
+        return;
+    }
+    
+    QImage destImage = destBitmap->pixmap.toImage();
+    QImage srcImage = srcBitmap->pixmap.toImage();
+    
+    QPainter painter(&destImage);
+    painter.drawImage(destX, destY, srcImage, srcX, srcY, width, height);
+    painter.end();
+    
+    destBitmap->pixmap = QPixmap::fromImage(destImage);
+}
+
+void API_Bitmap_FillBitmap(bitmap_handle handle, int32 x, int32 y, int32 width, int32 height,
+                           uint32 color)
+{
+    MockBitmap* bitmap = GetBitmap(handle);
+    if (!bitmap) {
+        return;
+    }
+    
+    QImage image = bitmap->pixmap.toImage();
+    QPainter painter(&image);
+    painter.fillRect(x, y, width, height, QColor::fromRgba(color));
+    painter.end();
+    
+    bitmap->pixmap = QPixmap::fromImage(image);
+}
+
+void API_Bitmap_GetBitmapDevicePixelRatio(const_bitmap_handle handle, double* ratio)
+{
+    MockBitmap* bitmap = GetBitmap(const_cast<bitmap_handle>(handle));
+    if (!bitmap || !ratio) {
+        if (ratio) *ratio = 1.0;
+        return;
+    }
+    
+    *ratio = bitmap->pixmap.devicePixelRatio();
+}
+
+void API_Bitmap_SetBitmapDevicePixelRatio(bitmap_handle handle, double ratio)
+{
+    MockBitmap* bitmap = GetBitmap(handle);
+    if (!bitmap || ratio <= 0.0) {
+        return;
+    }
+    
+    bitmap->pixmap.setDevicePixelRatio(ratio);
+    bitmap->devicePixelRatio = ratio;
+}
+
+
+// ----------------------------------------------------------------------------
+// ComboBox Context Implementation
+// ----------------------------------------------------------------------------
+
+struct MockComboBox {
+    QComboBox* comboBox;
+    api_handle clientHandle;
+    
+    MockComboBox() 
+        : comboBox(new QComboBox()),
+          clientHandle(nullptr)
+    {
+    }
+    
+    ~MockComboBox() {
+        // Qt parent ownership handles deletion
+    }
+};
+
+// Global map to track comboboxes
+static std::map<control_handle, MockComboBox*> g_combobox_map;
+static std::mutex g_combobox_map_mutex;
+
+control_handle API_ComboBox_CreateComboBox(api_handle, api_handle client, 
+                                           control_handle parent, uint32 flags)
+{
+    LogDbg("CreateComboBox called");
+    
+    MockComboBox* combo = new MockComboBox();
+    combo->clientHandle = client;
+    
+    if (parent) {
+        QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
+        combo->comboBox->setParent(parentWidget);
+    }
+    
+    control_handle handle = reinterpret_cast<control_handle>(combo->comboBox);
+    
+    std::lock_guard<std::mutex> lock(g_combobox_map_mutex);
+    g_combobox_map[handle] = combo;
+    
+    return handle;
+}
+
+int32 API_ComboBox_GetComboBoxLength(const_control_handle handle)
+{
+    std::lock_guard<std::mutex> lock(g_combobox_map_mutex);
+    auto it = g_combobox_map.find(const_cast<control_handle>(handle));
+    if (it == g_combobox_map.end()) {
+        return 0;
+    }
+    
+    return it->second->comboBox->count();
+}
+
+int32 API_ComboBox_GetComboBoxCurrentItem(const_control_handle handle)
+{
+    std::lock_guard<std::mutex> lock(g_combobox_map_mutex);
+    auto it = g_combobox_map.find(const_cast<control_handle>(handle));
+    if (it == g_combobox_map.end()) {
+        return -1;
+    }
+    
+    return it->second->comboBox->currentIndex();
+}
+
+void API_ComboBox_SetComboBoxCurrentItem(control_handle handle, int32 index)
+{
+    LogDbg("SetComboBoxCurrentItem called, index=" + std::to_string(index));
+    
+    std::lock_guard<std::mutex> lock(g_combobox_map_mutex);
+    auto it = g_combobox_map.find(handle);
+    if (it == g_combobox_map.end()) {
+        return;
+    }
+    
+    it->second->comboBox->setCurrentIndex(index);
+}
+
+void API_ComboBox_InsertComboBoxItem(control_handle handle, int32 index, 
+                                     const char16_type* text, const_bitmap_handle icon)
+{
+    LogDbg("InsertComboBoxItem called");
+    
+    std::lock_guard<std::mutex> lock(g_combobox_map_mutex);
+    auto it = g_combobox_map.find(handle);
+    if (it == g_combobox_map.end()) {
+        return;
+    }
+    
+    QString qtext;
+    if (text) {
+        qtext = QString::fromUtf16(reinterpret_cast<const ushort*>(text));
+    }
+    
+    if (icon) {
+        QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(icon));
+        if (pixmap) {
+            it->second->comboBox->insertItem(index, QIcon(*pixmap), qtext);
+        } else {
+            it->second->comboBox->insertItem(index, qtext);
+        }
+    } else {
+        it->second->comboBox->insertItem(index, qtext);
+    }
+}
+
+void API_ComboBox_ClearComboBox(control_handle handle)
+{
+    LogDbg("ClearComboBox called");
+    
+    std::lock_guard<std::mutex> lock(g_combobox_map_mutex);
+    auto it = g_combobox_map.find(handle);
+    if (it == g_combobox_map.end()) {
+        return;
+    }
+    
+    it->second->comboBox->clear();
+}
+
+
+// ----------------------------------------------------------------------------
+// CheckBox and RadioButton implementations
+// ----------------------------------------------------------------------------
+
+control_handle API_Button_CreateCheckBox(api_handle hModule, api_handle client, 
+                                         const char16_type* text, control_handle parent, uint32 flags)
+{
+    auto textStr = text ? Utf16ToUtf8(text) : "";
+    LogDbg("CreateCheckBox called, text=" + textStr);
+    
+    MockButton* btn = new MockButton(false);
+    btn->clientHandle = client;
+    btn->checkable = true;
+    
+    // Replace the button with a QCheckBox
+    delete btn->button;
+    btn->button = new QCheckBox();
+    btn->isToolButton = false;
+    
+    QCheckBox* checkBox = static_cast<QCheckBox*>(btn->button);
+    checkBox->setCheckable(true);
+    
+    if (text && *text) {
+        checkBox->setText(QString::fromUtf16(reinterpret_cast<const ushort*>(text)));
+    }
+    
+    if (parent) {
+        QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
+        checkBox->setParent(parentWidget);
+    }
+    
+    control_handle handle = reinterpret_cast<control_handle>(btn->button);
+    
+    std::lock_guard<std::mutex> lock(g_button_map_mutex);
+    g_button_map[handle] = btn;
+    
+    return handle;
+}
+
+control_handle API_Button_CreateRadioButton(api_handle hModule, api_handle client,
+                                            const char16_type* text, control_handle parent, uint32 flags)
+{
+    auto textStr = text ? Utf16ToUtf8(text) : "";
+    LogDbg("CreateRadioButton called, text=" + textStr);
+    
+    MockButton* btn = new MockButton(false);
+    btn->clientHandle = client;
+    btn->checkable = true;
+    
+    // Replace the button with a QRadioButton
+    delete btn->button;
+    btn->button = new QRadioButton();
+    btn->isToolButton = false;
+    
+    QRadioButton* radioButton = static_cast<QRadioButton*>(btn->button);
+    radioButton->setCheckable(true);
+    
+    if (text && *text) {
+        radioButton->setText(QString::fromUtf16(reinterpret_cast<const ushort*>(text)));
+    }
+    
+    if (parent) {
+        QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
+        radioButton->setParent(parentWidget);
+    }
+    
+    control_handle handle = reinterpret_cast<control_handle>(btn->button);
+    
+    std::lock_guard<std::mutex> lock(g_button_map_mutex);
+    g_button_map[handle] = btn;
+    
+    return handle;
+}
+
+
+// ----------------------------------------------------------------------------
+// Edit Context Implementation
+// ----------------------------------------------------------------------------
+
+struct MockEdit {
+    QLineEdit* edit;
+    api_handle clientHandle;
+    
+    MockEdit(const char16_type* text = nullptr) 
+        : edit(new QLineEdit()),
+          clientHandle(nullptr)
+    {
+        if (text && *text) {
+            edit->setText(QString::fromUtf16(reinterpret_cast<const ushort*>(text)));
+        }
+    }
+    
+    ~MockEdit() {
+        // Qt parent ownership handles deletion
+    }
+};
+
+// Global map to track edits
+static std::map<control_handle, MockEdit*> g_edit_map;
+static std::mutex g_edit_map_mutex;
+
+control_handle API_Edit_CreateEdit(api_handle, api_handle client, const char16_type* text, 
+                                   control_handle parent, uint32 flags)
+{
+    LogDbg("CreateEdit called");
+    
+    MockEdit* edit = new MockEdit(text);
+    edit->clientHandle = client;
+    
+    // Set parent if provided
+    if (parent) {
+        QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
+        edit->edit->setParent(parentWidget);
+    }
+    
+    control_handle handle = reinterpret_cast<control_handle>(edit->edit);
+    
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    g_edit_map[handle] = edit;
+    
+    return handle;
+}
+
+api_bool API_Edit_GetEditText(const_control_handle handle, char16_type* text, size_type* len)
+{
+    LogDbg("GetEditText called");
+    
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(const_cast<control_handle>(handle));
+    if (it == g_edit_map.end()) {
+        if (len) *len = 0;
+        return api_false;
+    }
+    
+    QString qtext = it->second->edit->text();
+    std::u16string u16text = qtext.toStdU16String();
+    
+    if (text == nullptr) {
+        if (len) *len = u16text.length();
+        return api_true;
+    }
+    
+    if (len && *len > 0) {
+        size_type copyLen = std::min(*len - 1, u16text.length());
+        std::memcpy(text, u16text.c_str(), copyLen * sizeof(char16_type));
+        text[copyLen] = 0;
+        *len = copyLen;
+    }
+    
+    return api_true;
+}
+
+void API_Edit_SetEditText(control_handle handle, const char16_type* text)
+{
+    LogDbg("SetEditText called");
+    
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end()) {
+        return;
+    }
+    
+    if (text) {
+        it->second->edit->setText(QString::fromUtf16(reinterpret_cast<const ushort*>(text)));
+    } else {
+        it->second->edit->clear();
+    }
+}
+
+api_bool API_Edit_GetEditReadOnly(const_control_handle handle)
+{
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(const_cast<control_handle>(handle));
+    if (it == g_edit_map.end()) {
+        return api_false;
+    }
+    
+    return it->second->edit->isReadOnly() ? api_true : api_false;
+}
+
+void API_Edit_SetEditReadOnly(control_handle handle, api_bool readOnly)
+{
+    LogDbg("SetEditReadOnly called");
+    
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end()) {
+        return;
+    }
+    
+    it->second->edit->setReadOnly(readOnly != 0);
+}
+
+// ----------------------------------------------------------------------------
+// TextBox Context Implementation (QTextEdit)
+// ----------------------------------------------------------------------------
+
+struct MockTextBox {
+    QTextEdit* textEdit;
+    api_handle clientHandle;
+    
+    MockTextBox(const char16_type* text = nullptr) 
+        : textEdit(new QTextEdit()),
+          clientHandle(nullptr)
+    {
+        if (text && *text) {
+            textEdit->setText(QString::fromUtf16(reinterpret_cast<const ushort*>(text)));
+        }
+    }
+    
+    ~MockTextBox() {
+        // Qt parent ownership handles deletion
+    }
+};
+
+// Global map to track textboxes
+static std::map<control_handle, MockTextBox*> g_textbox_map;
+static std::mutex g_textbox_map_mutex;
+
+control_handle API_TextBox_CreateTextBox(api_handle, api_handle client, const char16_type* text,
+                                         control_handle parent, uint32 flags)
+{
+    LogDbg("CreateTextBox called");
+    
+    MockTextBox* textbox = new MockTextBox(text);
+    textbox->clientHandle = client;
+    
+    if (parent) {
+        QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
+        textbox->textEdit->setParent(parentWidget);
+    }
+    
+    control_handle handle = reinterpret_cast<control_handle>(textbox->textEdit);
+    
+    std::lock_guard<std::mutex> lock(g_textbox_map_mutex);
+    g_textbox_map[handle] = textbox;
+    
+    return handle;
+}
+
+api_bool API_TextBox_GetTextBoxText(const_control_handle handle, char16_type* text, size_type* len)
+{
+    std::lock_guard<std::mutex> lock(g_textbox_map_mutex);
+    auto it = g_textbox_map.find(const_cast<control_handle>(handle));
+    if (it == g_textbox_map.end()) {
+        if (len) *len = 0;
+        return api_false;
+    }
+    
+    QString qtext = it->second->textEdit->toPlainText();
+    std::u16string u16text = qtext.toStdU16String();
+    
+    if (text == nullptr) {
+        if (len) *len = u16text.length();
+        return api_true;
+    }
+    
+    if (len && *len > 0) {
+        size_type copyLen = std::min(*len - 1, u16text.length());
+        std::memcpy(text, u16text.c_str(), copyLen * sizeof(char16_type));
+        text[copyLen] = 0;
+        *len = copyLen;
+    }
+    
+    return api_true;
+}
+
+void API_TextBox_SetTextBoxText(control_handle handle, const char16_type* text)
+{
+    std::lock_guard<std::mutex> lock(g_textbox_map_mutex);
+    auto it = g_textbox_map.find(handle);
+    if (it == g_textbox_map.end()) {
+        return;
+    }
+    
+    if (text) {
+        it->second->textEdit->setText(QString::fromUtf16(reinterpret_cast<const ushort*>(text)));
+    } else {
+        it->second->textEdit->clear();
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Slider Context Implementation
+// ----------------------------------------------------------------------------
+
+struct MockSlider {
+    QSlider* slider;
+    api_handle clientHandle;
+    
+    MockSlider(bool vertical) 
+        : slider(new QSlider(vertical ? Qt::Vertical : Qt::Horizontal)),
+          clientHandle(nullptr)
+    {
+    }
+    
+    ~MockSlider() {
+        // Qt parent ownership handles deletion
+    }
+};
+
+// Global map to track sliders
+static std::map<control_handle, MockSlider*> g_slider_map;
+static std::mutex g_slider_map_mutex;
+
+control_handle API_Slider_CreateSlider(api_handle, api_handle client, api_bool vertical,
+                                       control_handle parent, uint32 flags)
+{
+    LogDbg("CreateSlider called, vertical=" + std::to_string(vertical));
+    
+    MockSlider* slider = new MockSlider(vertical != 0);
+    slider->clientHandle = client;
+    
+    if (parent) {
+        QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
+        slider->slider->setParent(parentWidget);
+    }
+    
+    control_handle handle = reinterpret_cast<control_handle>(slider->slider);
+    
+    std::lock_guard<std::mutex> lock(g_slider_map_mutex);
+    g_slider_map[handle] = slider;
+    
+    return handle;
+}
+
+int32 API_Slider_GetSliderValue(const_control_handle handle)
+{
+    std::lock_guard<std::mutex> lock(g_slider_map_mutex);
+    auto it = g_slider_map.find(const_cast<control_handle>(handle));
+    if (it == g_slider_map.end()) {
+        return 0;
+    }
+    
+    return it->second->slider->value();
+}
+
+void API_Slider_SetSliderValue(control_handle handle, int32 value)
+{
+    LogDbg("SetSliderValue called, value=" + std::to_string(value));
+    
+    std::lock_guard<std::mutex> lock(g_slider_map_mutex);
+    auto it = g_slider_map.find(handle);
+    if (it == g_slider_map.end()) {
+        return;
+    }
+    
+    it->second->slider->setValue(value);
+}
+
+void API_Slider_GetSliderRange(const_control_handle handle, int32* minValue, int32* maxValue)
+{
+    std::lock_guard<std::mutex> lock(g_slider_map_mutex);
+    auto it = g_slider_map.find(const_cast<control_handle>(handle));
+    if (it == g_slider_map.end()) {
+        if (minValue) *minValue = 0;
+        if (maxValue) *maxValue = 100;
+        return;
+    }
+    
+    if (minValue) *minValue = it->second->slider->minimum();
+    if (maxValue) *maxValue = it->second->slider->maximum();
+}
+
+void API_Slider_SetSliderRange(control_handle handle, int32 minValue, int32 maxValue)
+{
+    LogDbg("SetSliderRange called");
+    
+    std::lock_guard<std::mutex> lock(g_slider_map_mutex);
+    auto it = g_slider_map.find(handle);
+    if (it == g_slider_map.end()) {
+        return;
+    }
+    
+    it->second->slider->setRange(minValue, maxValue);
+}
+
 // Mock implementations for Global API functions
 
 // Simple error code storage
@@ -2585,7 +4425,7 @@ static MockPixelTraitsLUT g_pixel_luts[16] = {
 
 // Get the PixInsight version
 void API_Global_GetPixInsightVersion(uint32_t* major, uint32_t* minor, uint32_t* release, uint32_t* revision, uint32_t* beta, uint32_t* conf, uint32_t* le, char16_type* lang) {
-    Log("GetPixInsightVersion called");
+    LogDbg("GetPixInsightVersion called");
     
     if (major) *major = s_major;
     if (minor) *minor = s_minor;
@@ -2608,7 +4448,7 @@ void API_Global_GetPixInsightVersion(uint32_t* major, uint32_t* minor, uint32_t*
 
 // Get the PixInsight codename
 char16_type* API_Global_GetPixInsightCodename(void* moduleHandle) {
-    Log("GetPixInsightCodename called with module: " + std::to_string((uintptr_t)moduleHandle));
+    LogDbg("GetPixInsightCodename called with module: " + std::to_string((uintptr_t)moduleHandle));
     
     // Static codename to return
     static const char16_type codename[] = { 'C', 'l', 'o', 'u', 'd', ' ', 'N', 'i', 'n', 'e', 0 };
@@ -2633,7 +4473,7 @@ char16_type* API_Global_GetPixInsightCodename(void* moduleHandle) {
 
 // Mock for GetPixelTraitsLUT
 void* GetPixelTraitsLUT(int format) {
-    Log("GetPixelTraitsLUT called with format: " + std::to_string(format));
+    LogDbg("GetPixelTraitsLUT called with format: " + std::to_string(format));
     
     if (format >= 0 && format < 16) {
         return &g_pixel_luts[format];
@@ -2643,42 +4483,42 @@ void* GetPixelTraitsLUT(int format) {
 
 // Mock for GetConsole
 void* GetConsole() {
-    Log("GetConsole called");
+    LogDbg("GetConsole called");
     return g_console_handle;
 }
 
 // Mock for LastError
 uint32 API_Global_LastError() {
-    Log("LastError called, returning: " + std::to_string(g_last_error));
+    LogDbg("LastError called, returning: " + std::to_string(g_last_error));
     return g_last_error;
 }
 
 // Mock for setting error
 void SetLastError(int error_code) {
     g_last_error = error_code;
-    Log("SetLastError called with: " + std::to_string(error_code));
+    LogDbg("SetLastError called with: " + std::to_string(error_code));
 }
 
 // Mock for ClearError
 void ClearError() {
     g_last_error = 0;
-    Log("ClearError called");
+    LogDbg("ClearError called");
 }
 
 // Mock for ProcessEvents
 void API_Global_ProcessEvents(api_bool excludeUserInputEvents) {
-    Log("ProcessEvents called");
+    LogDbg("ProcessEvents called");
 }
 
 // Mock for GetApplicationInstanceSlot
 int GetApplicationInstanceSlot() {
-    Log("GetApplicationInstanceSlot called");
+    LogDbg("GetApplicationInstanceSlot called");
     return 0; // Root slot
 }
 
 // Mock for GetProcessStatus
 uint32_t API_Global_GetProcessStatus() {
-    Log("GetProcessStatus called");
+    LogDbg("GetProcessStatus called");
     // Return a status that indicates not aborted (bit 31 clear)
     // PCL checks if bit 31 (0x80000000) is set to determine if process should abort
     return 0x00000000; // Normal status, not aborted
@@ -2710,13 +4550,13 @@ uint32_t API_Global_GetProcessStatus() {
 
 // Mock for EnableAbort
 int EnableAbort() {
-  Log("EnableAbort called");
+  LogDbg("EnableAbort called");
   return 1; // api_true - success
 }
 
 // Mock for GetGlobalFlag
 api_bool API_Global_GetGlobalFlag(const char* flag_name, api_bool* value) {
-    Log("GetGlobalFlag called with: " + std::string(flag_name ? flag_name : "(null)"));
+    LogDbg("GetGlobalFlag called with: " + std::string(flag_name ? flag_name : "(null)"));
     
     if (!value) {
         return 0; // api_false
@@ -2741,7 +4581,7 @@ api_bool API_Global_GetGlobalFlag(const char* flag_name, api_bool* value) {
 
 // Mock for GetGlobalInteger
 int API_Global_GetGlobalInteger(const char* int_name, void* value, api_bool isSigned) {
-    Log("GetGlobalInteger called with: " + std::string(int_name ? int_name : "(null)"));
+    LogDbg("GetGlobalInteger called with: " + std::string(int_name ? int_name : "(null)"));
     
     if (!value) {
         return 0; // api_false
@@ -2766,7 +4606,7 @@ int API_Global_GetGlobalInteger(const char* int_name, void* value, api_bool isSi
 
 // Mock for GetUIObjectRefCount
 size_type API_UI_GetUIObjectRefCount(const_api_handle ui_object) {
-    Log("GetUIObjectRefCount called with object: " + std::to_string((uintptr_t)ui_object));
+    LogDbg("GetUIObjectRefCount called with object: " + std::to_string((uintptr_t)ui_object));
     
     if (!ui_object) {
         return 0; // No references for null object
@@ -2778,7 +4618,7 @@ size_type API_UI_GetUIObjectRefCount(const_api_handle ui_object) {
 
 // Mock for DetachFromUIObject
 api_bool API_UI_DetachFromUIObject(api_handle module_handle, api_handle ui_object) {
-    Log("DetachFromUIObject called with module: " + std::to_string((uintptr_t)module_handle) + 
+    LogDbg("DetachFromUIObject called with module: " + std::to_string((uintptr_t)module_handle) + 
              ", object: " + std::to_string((uintptr_t)ui_object));
     
     if (!ui_object) {
@@ -2791,7 +4631,7 @@ api_bool API_UI_DetachFromUIObject(api_handle module_handle, api_handle ui_objec
 
 // Memory allocation function
 void* API_Global_Allocate(size_type size) {
-    Log("Allocate called for size: " + std::to_string(size));
+    LogDbg("Allocate called for size: " + std::to_string(size));
     
     if (size == 0) {
         return nullptr;
@@ -2800,7 +4640,7 @@ void* API_Global_Allocate(size_type size) {
     void* ptr = malloc(size);
     
     if (!ptr)
-        Log("Allocate failed: out of memory");
+        LogDbg("Allocate failed: out of memory");
     
     return ptr;
 }
@@ -2808,7 +4648,7 @@ void* API_Global_Allocate(size_type size) {
 // Memory deallocation function
 api_bool API_Global_Deallocate(void* ptr) {
     if (!ptr) {
-        Log("Deallocate called with nullptr");
+        LogDbg("Deallocate called with nullptr");
         return api_false;
     }
     
@@ -2847,7 +4687,7 @@ meta_format_handle API_FileFormat_GetFileFormatByFileExtension(api_handle handle
     }
     
     std::string filenameUtf8 = Utf16ToUtf8(filename);
-    Log("GetFileFormatByFileExtension called with filename: " + filenameUtf8);
+    LogDbg("GetFileFormatByFileExtension called with filename: " + filenameUtf8);
     
     std::string extension = GetFileExtension(filenameUtf8);
     if (extension.empty()) {
@@ -2879,7 +4719,7 @@ api_bool API_FileFormat_GetFileFormatCapabilities(meta_format_handle handle, api
     // FIXED: Cast to MockFormatCapabilities, not string
     const MockFormatCapabilities* caps = static_cast<const MockFormatCapabilities*>(handle);
     
-    Log("GetFileFormatCapabilities called for: " + caps->extension);
+    LogDbg("GetFileFormatCapabilities called for: " + caps->extension);
     
     capabilities->canRead = caps->canRead ? api_true : api_false;
     capabilities->canWrite = caps->canWrite ? api_true : api_false;
@@ -2903,7 +4743,7 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
     }
     
     std::string path = Utf16ToUtf8(filePath);
-    Log("OpenImageFileEx called for: " + path);
+    LogDbg("OpenImageFileEx called for: " + path);
     
     std::lock_guard<std::mutex> lock(g_file_instances_mutex);
     auto it = g_file_instances.find(handle);
@@ -2939,7 +4779,7 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
     
     // Handle XISF files
     if (isXISF) {
-        Log("OpenImageFileEx: Opening XISF file");
+        LogDbg("OpenImageFileEx: Opening XISF file");
         
         try {
             pcl::XISFReader xisfReader;
@@ -2949,7 +4789,7 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
             xisfOptions.verbosity = 1;
             if (hints) {
                 // Parse hints if needed
-                Log("OpenImageFileEx: Hints provided: " + std::string(hints));
+                LogDbg("OpenImageFileEx: Hints provided: " + std::string(hints));
             }
             xisfReader.SetOptions(xisfOptions);
             
@@ -2958,7 +4798,7 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
             
             // Get number of images
             int numImages = xisfReader.NumberOfImages();
-            Log("OpenImageFileEx: Found " + std::to_string(numImages) + " images in XISF file");
+            LogDbg("OpenImageFileEx: Found " + std::to_string(numImages) + " images in XISF file");
             
             // Create mock images for each image in the file
             for (int i = 0; i < numImages; i++) {
@@ -2987,7 +4827,7 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
                 
                 it->second->images.push_back(img);
                 
-                Log("OpenImageFileEx: Image " + std::to_string(i) + " - " +
+                LogDbg("OpenImageFileEx: Image " + std::to_string(i) + " - " +
                          std::to_string(img->width) + "x" + std::to_string(img->height) + 
                          ", " + std::to_string(img->channels) + " channels, " +
                          std::to_string(img->bitsPerSample) + " bits, " +
@@ -2997,24 +4837,24 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
             xisfReader.Close();
             
             if (it->second->images.empty()) {
-                Log("OpenImageFileEx: No images found in XISF file");
+                LogDbg("OpenImageFileEx: No images found in XISF file");
                 return api_false;
             }
             
             return api_true;
             
         } catch (const std::exception& e) {
-            Log("OpenImageFileEx: Exception opening XISF file: " + std::string(e.what()));
+            LogDbg("OpenImageFileEx: Exception opening XISF file: " + std::string(e.what()));
             return api_false;
         } catch (...) {
-            Log("OpenImageFileEx: Unknown exception opening XISF file");
+            LogDbg("OpenImageFileEx: Unknown exception opening XISF file");
             return api_false;
         }
     }
     
     // Handle FITS files (existing CFITSIO code)
     if (isFITS) {
-        Log("OpenImageFileEx: Opening FITS file");
+        LogDbg("OpenImageFileEx: Opening FITS file");
         
         try {
             fitsfile *fptr;
@@ -3024,7 +4864,7 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
             
             // Open the FITS file
             if (fits_open_file(&fptr, path.c_str(), READONLY, &status)) {
-                Log("OpenImageFileEx: Failed to open FITS file, status = " + std::to_string(status));
+                LogDbg("OpenImageFileEx: Failed to open FITS file, status = " + std::to_string(status));
                 return api_false;
             }
             
@@ -3032,7 +4872,7 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
             int numHDUs = 0;
             fits_get_num_hdus(fptr, &numHDUs, &status);
             
-            Log("OpenImageFileEx: Found " + std::to_string(numHDUs) + " HDUs in FITS file");
+            LogDbg("OpenImageFileEx: Found " + std::to_string(numHDUs) + " HDUs in FITS file");
             
             // Read each image HDU
             for (int hdu = 1; hdu <= numHDUs; hdu++) {
@@ -3105,7 +4945,7 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
                 
                 it->second->images.push_back(img);
                 
-                Log("OpenImageFileEx: HDU " + std::to_string(hdu) + " - " +
+                LogDbg("OpenImageFileEx: HDU " + std::to_string(hdu) + " - " +
                          std::to_string(img->width) + "x" + std::to_string(img->height) + 
                          ", " + std::to_string(img->channels) + " channels, " +
                          std::to_string(img->bitsPerSample) + " bits, " +
@@ -3115,17 +4955,17 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
             fits_close_file(fptr, &status);
             
             if (it->second->images.empty()) {
-                Log("OpenImageFileEx: No image HDUs found in FITS file");
+                LogDbg("OpenImageFileEx: No image HDUs found in FITS file");
                 return api_false;
             }
             
             return api_true;
             
         } catch (const std::exception& e) {
-            Log("OpenImageFileEx: Exception opening FITS file: " + std::string(e.what()));
+            LogDbg("OpenImageFileEx: Exception opening FITS file: " + std::string(e.what()));
             return api_false;
         } catch (...) {
-            Log("OpenImageFileEx: Unknown exception opening FITS file");
+            LogDbg("OpenImageFileEx: Unknown exception opening FITS file");
             return api_false;
         }
     }
@@ -3156,17 +4996,17 @@ api_bool API_FileFormat_OpenImageFileEx(file_format_handle handle, const char16_
 
 api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image) {
     if (!handle || !image) {
-        Log("ReadImage: Invalid handle or image");
+        LogDbg("ReadImage: Invalid handle or image");
         return api_false;
     }
     
-    Log("ReadImage: Starting image read operation");
+    LogDbg("ReadImage: Starting image read operation");
     
     std::lock_guard<std::mutex> lock(g_file_instances_mutex);
     auto it = g_file_instances.find(handle);
     if (it == g_file_instances.end() || 
         it->second->selectedImage >= it->second->images.size()) {
-        Log("ReadImage: File instance not found or invalid image selection");
+        LogDbg("ReadImage: File instance not found or invalid image selection");
         return api_false;
     }
     
@@ -3175,7 +5015,7 @@ api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image)
     
     // Handle XISF files
     if (isXISF && !instance->path.empty()) {
-        Log("ReadImage: Using XISF reader for: " + instance->path);
+        LogDbg("ReadImage: Using XISF reader for: " + instance->path);
         
         try {
             pcl::XISFReader xisfReader;
@@ -3190,7 +5030,7 @@ api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image)
             if (instance->selectedImage < xisfReader.NumberOfImages()) {
                 xisfReader.SelectImage(instance->selectedImage);
             } else {
-                Log("ReadImage: Invalid image index");
+                LogDbg("ReadImage: Invalid image index");
                 xisfReader.Close();
                 return api_false;
             }
@@ -3198,7 +5038,7 @@ api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image)
             pcl::ImageInfo imgInfo = xisfReader.ImageInfo();
             pcl::ImageOptions imgOptions = xisfReader.ImageOptions();
             
-            Log("ReadImage: XISF image dimensions: " + 
+            LogDbg("ReadImage: XISF image dimensions: " + 
                      std::to_string(imgInfo.width) + "x" + 
                      std::to_string(imgInfo.height) + ", " +
                      std::to_string(imgInfo.numberOfChannels) + " channels");
@@ -3215,7 +5055,7 @@ api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image)
 
 	    // Check if we need to reallocate pixelData array for different channel count
 	    if (mockImg->channels != imgInfo.numberOfChannels) {
-		Log("ReadImage: Reallocating pixelData array from " + 
+		LogDbg("ReadImage: Reallocating pixelData array from " + 
 			 std::to_string(mockImg->channels) + " to " + 
 			 std::to_string(imgInfo.numberOfChannels) + " channels");
 
@@ -3299,12 +5139,12 @@ api_bool API_FileFormat_ReadImage(file_format_handle handle, image_handle image)
             }
             
             xisfReader.Close();
-            Log("ReadImage: Successfully read XISF file");
+            LogDbg("ReadImage: Successfully read XISF file");
             
             return api_true;
             
         } catch (const std::exception& e) {
-            Log("ReadImage: Exception reading XISF file: " + std::string(e.what()));
+            LogDbg("ReadImage: Exception reading XISF file: " + std::string(e.what()));
             return api_false;
         }
     }
@@ -3319,7 +5159,7 @@ file_format_handle CreateFileFormatInstance(api_handle handle, meta_format_handl
     }
     
     std::string extension = (const char*)meta_handle;
-    Log("CreateFileFormatInstance called for: " + extension);
+    LogDbg("CreateFileFormatInstance called for: " + extension);
     
     // Create a new instance
     MockFileInstance* instance = new MockFileInstance();
@@ -3337,19 +5177,19 @@ file_format_handle CreateFileFormatInstance(api_handle handle, meta_format_handl
 // Get number of images in the file
 uint32 GetImageCount(const_file_format_handle handle) {
     if (!handle) {
-        Log("GetImageCount: Invalid handle");
+        LogDbg("GetImageCount: Invalid handle");
         return 0;
     }
     
     std::lock_guard<std::mutex> lock(g_file_instances_mutex);
     auto it = g_file_instances.find((file_format_handle)handle);
     if (it == g_file_instances.end()) {
-        Log("GetImageCount: File instance not found");
+        LogDbg("GetImageCount: File instance not found");
         return 0;
     }
     
     uint32 count = static_cast<uint32>(it->second->images.size());
-    Log("GetImageCount: Found " + std::to_string(count) + " images");
+    LogDbg("GetImageCount: Found " + std::to_string(count) + " images");
     
     return count;
 }
@@ -3417,14 +5257,14 @@ api_bool GetImageDescription(const_file_format_handle handle, api_image_info* in
 // Select an image in the file
 api_bool API_FileFormat_SelectImage(file_format_handle handle, uint32 index) {
     if (!handle) {
-        Log("SelectImage: Invalid handle");
+        LogDbg("SelectImage: Invalid handle");
         return api_false;
     }
     
     std::lock_guard<std::mutex> lock(g_file_instances_mutex);
     auto it = g_file_instances.find(handle);
     if (it == g_file_instances.end()) {
-        Log("SelectImage: File instance not found");
+        LogDbg("SelectImage: File instance not found");
         return api_false;
     }
     
@@ -3432,12 +5272,12 @@ api_bool API_FileFormat_SelectImage(file_format_handle handle, uint32 index) {
     
     // Check if the index is valid
     if (index >= instance->images.size()) {
-        Log("SelectImage: Invalid image index: " + std::to_string(index) + 
+        LogDbg("SelectImage: Invalid image index: " + std::to_string(index) + 
                  " (max: " + std::to_string(instance->images.size() - 1) + ")");
         return api_false;
     }
     
-    Log("SelectImage: Selecting image index " + std::to_string(index));
+    LogDbg("SelectImage: Selecting image index " + std::to_string(index));
     
     // Update the selected image index
     instance->selectedImage = index;
@@ -3448,18 +5288,18 @@ api_bool API_FileFormat_SelectImage(file_format_handle handle, uint32 index) {
 // Get selected image index
 uint32 GetSelectedImageIndex(const_file_format_handle handle) {
     if (!handle) {
-        Log("GetSelectedImageIndex: Invalid handle");
+        LogDbg("GetSelectedImageIndex: Invalid handle");
         return 0;
     }
     
     std::lock_guard<std::mutex> lock(g_file_instances_mutex);
     auto it = g_file_instances.find((file_format_handle)handle);
     if (it == g_file_instances.end()) {
-        Log("GetSelectedImageIndex: File instance not found");
+        LogDbg("GetSelectedImageIndex: File instance not found");
         return 0;
     }
     
-    Log("GetSelectedImageIndex: Current index is " + std::to_string(it->second->selectedImage));
+    LogDbg("GetSelectedImageIndex: Current index is " + std::to_string(it->second->selectedImage));
     return it->second->selectedImage;
 }
   
@@ -3558,7 +5398,7 @@ api_bool API_FileFormat_WriteImageFile(file_format_handle handle, const char* hi
     
     // In a real implementation, we would write to the file
     // For testing, just log that we're writing
-    Log("WriteImageFile called for: " + it->second->path);
+    LogDbg("WriteImageFile called for: " + it->second->path);
     
     return api_true;
 }
@@ -3571,7 +5411,7 @@ api_bool API_FileFormat_CreateImageFile(file_format_handle handle, const char16_
     }
     
     std::string path = Utf16ToUtf8(filePath);
-    Log("CreateImageFile called for: " + path);
+    LogDbg("CreateImageFile called for: " + path);
     
     std::lock_guard<std::mutex> lock(g_file_instances_mutex);
     auto it = g_file_instances.find(handle);
@@ -3593,7 +5433,7 @@ api_bool API_FileFormat_CreateImageFileEx(file_format_handle handle, const char1
     }
     
     std::string path = Utf16ToUtf8(filePath);
-    Log("CreateImageFileEx called for: " + path + " with count: " + std::to_string(count) +
+    LogDbg("CreateImageFileEx called for: " + path + " with count: " + std::to_string(count) +
              " and flags: " + std::to_string(flags));
     
     std::lock_guard<std::mutex> lock(g_file_instances_mutex);
@@ -3622,7 +5462,7 @@ api_bool API_FileFormat_CreateImageFileEx(file_format_handle handle, const char1
     
     // Pre-allocate space for the requested number of images
     // (we won't create them yet - they'll be created when FileCreateImage is called)
-    Log("CreateImageFileEx: Prepared for " + std::to_string(count) + " images");
+    LogDbg("CreateImageFileEx: Prepared for " + std::to_string(count) + " images");
     
     return api_true;
 }
@@ -3736,25 +5576,25 @@ api_bool API_FileFormat_WriteImage(file_format_handle handle, const_image_handle
     bool isXISF = (extension == ".xisf");
     
     if (isXISF) {
-	Log("WriteImage: Using XISF writer for: " + instance->path);
+	LogDbg("WriteImage: Using XISF writer for: " + instance->path);
 
 	// Get the MockImage
 	std::lock_guard<std::mutex> img_lock(g_image_map_mutex);
 	auto img_it = g_image_map.find((image_handle)image);
 	if (img_it == g_image_map.end()) {
-	    Log("WriteImage: Image not found in map");
+	    LogDbg("WriteImage: Image not found in map");
 	    return api_false;
 	}
 
 	MockImage* mockImg = img_it->second;
 
-	Log("WriteImage: MockImage is " + 
+	LogDbg("WriteImage: MockImage is " + 
 		 std::to_string(mockImg->width) + "x" + 
 		 std::to_string(mockImg->height) + ", " +
 		 std::to_string(mockImg->channels) + " channels");
 
 	if (!mockImg->pixelData) {
-	    Log("WriteImage: pixelData is NULL!");
+	    LogDbg("WriteImage: pixelData is NULL!");
 	    return api_false;
 	}
 
@@ -3779,7 +5619,7 @@ api_bool API_FileFormat_WriteImage(file_format_handle handle, const_image_handle
 
 	    for (uint32_t c = 0; c < mockImg->channels; c++) {
 		if (!mockImg->pixelData[c]) {
-		    Log("WriteImage: Channel " + std::to_string(c) + " is NULL!");
+		    LogDbg("WriteImage: Channel " + std::to_string(c) + " is NULL!");
 		    return api_false;
 		}
 
@@ -3803,11 +5643,11 @@ api_bool API_FileFormat_WriteImage(file_format_handle handle, const_image_handle
 	    xisfWriter.WriteImage(outputImage);
 
 	    xisfWriter.Close();
-	    Log("WriteImage: Successfully wrote XISF file");
+	    LogDbg("WriteImage: Successfully wrote XISF file");
 	    return api_true;
 
 	} catch (const std::exception& e) {
-	    Log("WriteImage: Exception: " + std::string(e.what()));
+	    LogDbg("WriteImage: Exception: " + std::string(e.what()));
 	    return api_false;
 	}
     }    
@@ -3817,11 +5657,11 @@ api_bool API_FileFormat_WriteImage(file_format_handle handle, const_image_handle
 // Set the RGB working space for an image in a file
 api_bool SetImageRGBWS(file_format_handle handle, const api_RGBWS* rgbws) {
     if (!handle || !rgbws) {
-        Log("SetImageRGBWS: Invalid handle or RGBWS data");
+        LogDbg("SetImageRGBWS: Invalid handle or RGBWS data");
         return api_false;
     }
     
-    Log("SetImageRGBWS: Setting RGB working space");
+    LogDbg("SetImageRGBWS: Setting RGB working space");
     
     // In a real implementation, you would store the RGBWS data
     // For the mock, we'll just return success
@@ -3831,11 +5671,11 @@ api_bool SetImageRGBWS(file_format_handle handle, const api_RGBWS* rgbws) {
 // Set metadata for an image in a file
 api_bool SetImageId(file_format_handle handle, const char* id) {
     if (!handle || !id) {
-        Log("SetImageId: Invalid handle or id");
+        LogDbg("SetImageId: Invalid handle or id");
         return api_false;
     }
     
-    Log("SetImageId: Setting image id to: " + std::string(id));
+    LogDbg("SetImageId: Setting image id to: " + std::string(id));
     
     // In a real implementation, you would store the id
     // For the mock, we'll just return success
@@ -3845,11 +5685,11 @@ api_bool SetImageId(file_format_handle handle, const char* id) {
 // Set the sample format for an image in a file
 api_bool SetImageOptions(file_format_handle handle, const api_image_options* options) {
     if (!handle || !options) {
-        Log("SetImageOptions: Invalid handle or options");
+        LogDbg("SetImageOptions: Invalid handle or options");
         return api_false;
     }
     
-    Log("SetImageOptions: Setting image options (bits: " + 
+    LogDbg("SetImageOptions: Setting image options (bits: " + 
              std::to_string(options->bitsPerSample) + 
              ", float: " + std::to_string(options->ieeefpSampleFormat) + ")");
     
@@ -3870,11 +5710,11 @@ api_bool SetImageOptions(file_format_handle handle, const api_image_options* opt
 // Set the image description for an image in a file
 api_bool SetImageDescription(file_format_handle handle, const api_image_info* info) {
     if (!handle || !info) {
-        Log("SetImageDescription: Invalid handle or info");
+        LogDbg("SetImageDescription: Invalid handle or info");
         return api_false;
     }
     
-    Log("SetImageDescription: Setting image description");
+    LogDbg("SetImageDescription: Setting image description");
     
     std::lock_guard<std::mutex> lock(g_file_instances_mutex);
     auto it = g_file_instances.find(handle);
@@ -3893,7 +5733,7 @@ api_bool SetImageDescription(file_format_handle handle, const api_image_info* in
 }
 
 image_handle API_SharedImage_CreateImage(uint32_t w, uint32_t h, uint32_t n, uint32_t nbits, api_bool flt, uint32_t cs, void* ptr) {
-    Log("SharedCreateImage called with dimensions: " + 
+    LogDbg("SharedCreateImage called with dimensions: " + 
              std::to_string(w) + "x" + std::to_string(h) + 
              ", channels: " + std::to_string(n));
     
@@ -3925,7 +5765,7 @@ image_handle API_SharedImage_CreateImage(uint32_t w, uint32_t h, uint32_t n, uin
     std::lock_guard<std::mutex> lock(g_image_map_mutex);
     g_image_map[handle] = img;
     
-    Log("SharedCreateImage: Created image with null pixel pointers (PCL will allocate)");
+    LogDbg("SharedCreateImage: Created image with null pixel pointers (PCL will allocate)");
     
     return handle;
 }
@@ -3942,7 +5782,7 @@ api_bool API_SharedImage_GetImagePixelData(image_handle handle, void*** data) {
     }
     
     MockImage* img = it->second;
-    Log("GetImagePixelData: Returning pixelData for " + 
+    LogDbg("GetImagePixelData: Returning pixelData for " + 
              std::to_string(img->channels) + " channels, pixelData=" + 
              (img->pixelData ? "valid" : "NULL"));
     
@@ -4117,7 +5957,7 @@ api_bool AttachToImage(image_handle handle, void* owner) {
     // 2. Increment a reference count
     
     // For this mock implementation, we'll just return success
-    Log("AttachToImage called with handle: " + std::to_string((uintptr_t)handle) + 
+    LogDbg("AttachToImage called with handle: " + std::to_string((uintptr_t)handle) + 
              ", owner: " + std::to_string((uintptr_t)owner));
     
     return api_true;
@@ -4145,37 +5985,37 @@ api_bool API_SharedImage_DetachFromImage(image_handle handle, void* owner) {
 
 api_bool API_SharedImage_SetImagePixelData(image_handle handle, void** data) {
     if (!handle) {
-        Log("SetImagePixelData: Invalid handle");
+        LogDbg("SetImagePixelData: Invalid handle");
         return api_false;
     }
     
     std::lock_guard<std::mutex> lock(g_image_map_mutex);
     auto it = g_image_map.find(handle);
     if (it == g_image_map.end()) {
-        Log("SetImagePixelData: Image handle not found in map");
+        LogDbg("SetImagePixelData: Image handle not found in map");
         return api_false;
     }
     
     MockImage* img = it->second;
     
     if (data == nullptr) {
-        Log("SetImagePixelData: Clearing pixel data (data is null)");
+        LogDbg("SetImagePixelData: Clearing pixel data (data is null)");
         img->pixelData = nullptr;
         return api_true;
     }
     
     // Add detailed logging
-    Log("SetImagePixelData: Setting pixel data for image " + 
+    LogDbg("SetImagePixelData: Setting pixel data for image " + 
              std::to_string(img->width) + "x" + std::to_string(img->height) + 
              " with " + std::to_string(img->channels) + " channels");
     for (uint32_t c = 0; c < img->channels; c++) {
-        Log("  Channel " + std::to_string(c) + ": " + 
+        LogDbg("  Channel " + std::to_string(c) + ": " + 
                  (data[c] ? "valid pointer" : "NULL"));
     }
     
     img->pixelData = data;
     
-    Log("SetImagePixelData: Successfully set pixel data pointer array");
+    LogDbg("SetImagePixelData: Successfully set pixel data pointer array");
     return api_true;
 }  
 
@@ -4184,7 +6024,7 @@ api_bool API_SharedImage_SetImageGeometry(image_handle handle, uint32_t w, uint3
         return api_false;
     }
     
-    Log("SetImageGeometry called with dimensions: " + 
+    LogDbg("SetImageGeometry called with dimensions: " + 
              std::to_string(w) + "x" + std::to_string(h) + 
              ", channels: " + std::to_string(n));
     
@@ -4214,30 +6054,30 @@ api_bool API_SharedImage_SetImageGeometry(image_handle handle, uint32_t w, uint3
                            ((img->bitsPerSample <= 16) ? 65535 : 4294967295.0));
     }
     
-    Log("SetImageGeometry: Successfully updated geometry metadata");
+    LogDbg("SetImageGeometry: Successfully updated geometry metadata");
     return api_true;
 }
   
 // Set the color space of an image
 api_bool API_SharedImage_SetImageColorSpace(image_handle handle, uint32_t cs) {
     if (!handle) {
-        Log("SetImageColorSpace: Invalid handle");
+        LogDbg("SetImageColorSpace: Invalid handle");
         return api_false;
     }
     
-    Log("SetImageColorSpace called with color space: " + std::to_string(cs));
+    LogDbg("SetImageColorSpace called with color space: " + std::to_string(cs));
     
     std::lock_guard<std::mutex> lock(g_image_map_mutex);
     auto it = g_image_map.find(handle);
     if (it == g_image_map.end()) {
-        Log("SetImageColorSpace: Image handle not found in map");
+        LogDbg("SetImageColorSpace: Image handle not found in map");
         return api_false;
     }
     
     // Set the new color space
     it->second->colorSpace = cs;
     
-    Log("SetImageColorSpace: Successfully set color space to " + std::to_string(cs));
+    LogDbg("SetImageColorSpace: Successfully set color space to " + std::to_string(cs));
     return api_true;
 }
 
@@ -7168,26 +9008,73 @@ action_handle API_Action_CreateActionSVGFile(api_handle, api_handle client, cons
 // ControlContext API
 // ----------------------------------------------------------------------------
 
-void API_Control_GetFrameRect(const_control_handle, int32*, int32*, int32*, int32*)
+void API_Control_GetFrameRect(const_control_handle handle,
+                              int32* x, int32* y, int32* w, int32* h)
 {
+    LogDebug("GetFrameRect called");
 
-  abort();
+    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    if (!widget) {
+        LogDebug("GetFrameRect: null widget");
+        if (x) *x = 0; if (y) *y = 0; if (w) *w = 0; if (h) *h = 0;
+        return;
+    }
+
+    QRect r = widget->geometry();   // includes frame for top-level windows
+    if (x) *x = r.x();
+    if (y) *y = r.y();
+    if (w) *w = r.width();
+    if (h) *h = r.height();
 }
-void API_Control_GetClientRect(const_control_handle, int32*, int32*, int32*, int32*)
-{
 
-  abort();
+void API_Control_GetClientRect(const_control_handle handle,
+                               int32* x, int32* y, int32* w, int32* h)
+{
+    LogDebug("GetClientRect called");
+
+    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    if (!widget) {
+        LogDebug("GetClientRect: null widget");
+        if (x) *x = 0; if (y) *y = 0; if (w) *w = 0; if (h) *h = 0;
+        return;
+    }
+
+    // Qt’s "client rect" (content area) → contentsRect()
+    QRect r = widget->contentsRect();
+
+    // contentsRect() is *relative to the widget*, generally (0,0)
+    if (x) *x = r.x();
+    if (y) *y = r.y();
+    if (w) *w = r.width();
+    if (h) *h = r.height();
 }
-void API_Control_SetClientRect(control_handle, int32, int32, int32, int32)
-{
 
-  abort();
+void API_Control_SetClientRect(control_handle handle,
+                               int32 x, int32 y, int32 w, int32 h)
+{
+    LogDebug("SetClientRect called: x=" + std::to_string(x) +
+             " y=" + std::to_string(y) +
+             " w=" + std::to_string(w) +
+             " h=" + std::to_string(h));
+
+    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    if (!widget) {
+        LogDebug("SetClientRect: null widget");
+        return;
+    }
+
+    // To set a *client* rect, we must adjust for frame margins
+    // but since this is mock API, simplest is: place at (x,y) and size to (w,h)
+    // ignoring OS window frame thickness.
+    // PCL mock only needs approximate behaviour for layout tests.
+
+    widget->setGeometry(x, y, w, h);
 }
 
 void API_Control_AdjustControlToContents(control_handle)
 {
 
-  abort();
+  //  abort();
 }
 
 void API_Control_GetControlExpansionEnabled(const_control_handle, api_bool*, api_bool*)
@@ -7594,137 +9481,16 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
      abort();
    }
 
-   api_bool       (API_Control_GetControlDisplayPixelRatio)( const_control_handle, double* )
+   api_bool       (API_Control_GetControlDisplayPixelRatio)( const_control_handle, double* ratio)
    {
-
-     abort();
+     *ratio = 1.0;
+     return true;
    }
 
-   api_bool       (API_Control_GetControlDevicePixelRatio)( const_control_handle, double* )
+   api_bool       (API_Control_GetControlDevicePixelRatio)( const_control_handle, double* ratio)
    {
-
-     abort();
-   }
-
-   api_bool       (API_Control_SetDestroyEventRoutine)( control_handle, api_handle, pcl::control_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetShowEventRoutine)( control_handle, api_handle, pcl::control_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetHideEventRoutine)( control_handle, api_handle, pcl::control_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetCloseEventRoutine)( control_handle, api_handle, pcl::control_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetGetFocusEventRoutine)( control_handle, api_handle, pcl::control_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetLoseFocusEventRoutine)( control_handle, api_handle, pcl::control_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetEnterEventRoutine)( control_handle, api_handle, pcl::control_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetLeaveEventRoutine)( control_handle, api_handle, pcl::control_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetMoveEventRoutine)( control_handle, api_handle, pcl::move_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetResizeEventRoutine)( control_handle, api_handle, pcl::resize_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetPaintEventRoutine)( control_handle, api_handle, pcl::paint_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetKeyPressEventRoutine)( control_handle, api_handle, pcl::keyboard_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetKeyReleaseEventRoutine)( control_handle, api_handle, pcl::keyboard_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetMouseMoveEventRoutine)( control_handle, api_handle, pcl::mouse_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetMouseDoubleClickEventRoutine)( control_handle, api_handle, pcl::mouse_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetMousePressEventRoutine)( control_handle, api_handle, pcl::mouse_button_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetMouseReleaseEventRoutine)( control_handle, api_handle, pcl::mouse_button_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetWheelEventRoutine)( control_handle, api_handle, pcl::wheel_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetFileDragEventRoutine)( control_handle, api_handle, pcl::file_drag_event_handler )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetFileDropEventRoutine)( control_handle, api_handle, pcl::file_drag_event_handler )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetViewDragEventRoutine)( control_handle, api_handle, pcl::view_drag_event_handler )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetViewDropEventRoutine)( control_handle, api_handle, pcl::view_drag_event_handler )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetChildCreateEventRoutine)( control_handle, api_handle, pcl::child_event_routine )
-   {
-
-     abort();
-   }
-   api_bool       (API_Control_SetChildDestroyEventRoutine)( control_handle, api_handle, pcl::child_event_routine )
-   {
-
-     abort();
+     *ratio = 1.0;
+     return true;
    }
 
 // ----------------------------------------------------------------------------
@@ -7996,17 +9762,6 @@ control_handle API_TabBox_GetTabBoxPageByIndex(const_control_handle, int32)
 // ButtonContext API
 // ----------------------------------------------------------------------------
 
-control_handle API_Button_CreateCheckBox(api_handle, api_handle client, const char16_type*, control_handle parent, uint32 flags)
-{
-
-  abort();
-}
-control_handle API_Button_CreateRadioButton(api_handle, api_handle client, const char16_type*, control_handle parent, uint32 flags)
-{
-
-  abort();
-}
-
 api_bool API_Button_GetButtonPushed(const_control_handle)
 {
   // returns true if button pushed
@@ -8060,31 +9815,6 @@ api_bool API_Button_GetButtonPushed(const_control_handle)
 // EditContext API
 // ----------------------------------------------------------------------------
 
-control_handle API_Edit_CreateEdit(api_handle, api_handle client, const char16_type*, control_handle parent, uint32 flags)
-{
-
-  abort();
-}
-api_bool API_Edit_GetEditText(const_control_handle, char16_type*, size_type*)
-{
-
-  abort();
-}
-void API_Edit_SetEditText(control_handle, const char16_type*)
-{
-
-  abort();
-}
-api_bool API_Edit_GetEditReadOnly(const_control_handle)
-{
-
-  abort();
-}
-void API_Edit_SetEditReadOnly(control_handle, api_bool)
-{
-
-  abort();
-}
 api_bool API_Edit_GetEditModified(const_control_handle)
 {
 
@@ -8214,21 +9944,6 @@ int32 API_Edit_GetEditAlignment(const_control_handle)
 // TextBoxContext API
 // ----------------------------------------------------------------------------
 
-control_handle API_TextBox_CreateTextBox(api_handle, api_handle client, const char16_type*, control_handle parent, uint32 flags)
-{
-
-  abort();
-}
-api_bool API_TextBox_GetTextBoxText(const_control_handle, char16_type*, size_type*)
-{
-
-  abort();
-}
-void API_TextBox_SetTextBoxText(control_handle, const char16_type*)
-{
-
-  abort();
-}
 api_bool API_TextBox_GetTextBoxReadOnly(const_control_handle)
 {
 
@@ -8299,46 +10014,18 @@ api_bool API_TextBox_SetTextBoxSelectionUpdatedEventRoutine(control_handle, api_
 // ComboBoxContext API
 // ----------------------------------------------------------------------------
 
-control_handle API_ComboBox_CreateComboBox(api_handle, api_handle client, control_handle parent, uint32 flags)
-{
-
-  abort();
-}
-int32 API_ComboBox_GetComboBoxLength(const_control_handle)
-{
-
-  abort();
-}
-int32 API_ComboBox_GetComboBoxCurrentItem(const_control_handle)
-{
-
-  abort();
-}
-void API_ComboBox_SetComboBoxCurrentItem(control_handle, int32)
-{
-
-  abort();
-}
 int32 API_ComboBox_FindComboBoxItem(const_control_handle, const char16_type*, int32, api_bool exactMatch, api_bool caseSensitive)
 {
 
   abort();
 }
-void API_ComboBox_InsertComboBoxItem(control_handle, int32, const char16_type*, const_bitmap_handle)
-{
 
-  abort();
-}
 void API_ComboBox_RemoveComboBoxItem(control_handle, int32)
 {
 
   abort();
 }
-void API_ComboBox_ClearComboBox(control_handle)
-{
 
-  abort();
-}
 api_bool API_ComboBox_GetComboBoxItemText(const_control_handle, int32, char16_type*, size_type*)
 {
 
@@ -8444,31 +10131,6 @@ api_bool API_ComboBox_SetComboBoxEditTextUpdatedEventRoutine(control_handle, api
 // SliderContext API
 // ----------------------------------------------------------------------------
 
-control_handle API_Slider_CreateSlider(api_handle, api_handle client, api_bool vertical, control_handle parent, uint32 flags)
-{
-
-  abort();
-}
-int32 API_Slider_GetSliderValue(const_control_handle)
-{
-
-  abort();
-}
-void API_Slider_SetSliderValue(control_handle, int32)
-{
-
-  abort();
-}
-void API_Slider_GetSliderRange(const_control_handle, int32*, int32*)
-{
-
-  abort();
-}
-void API_Slider_SetSliderRange(control_handle, int32, int32)
-{
-
-  abort();
-}
 int32 API_Slider_GetSliderStepSize(const_control_handle)
 {
 
@@ -8662,16 +10324,76 @@ void API_BitmapBox_SetBitmapBoxAutoFitEnabled(control_handle, api_bool)
 // ScrollBoxContext API
 // ----------------------------------------------------------------------------
 
-control_handle API_ScrollBox_CreateScrollBox(api_handle, api_handle client, control_handle parent, uint32 flags)
+control_handle API_ScrollBox_CreateScrollBox(
+        api_handle api,
+        api_handle client,
+        control_handle parent,
+        uint32 flags )
 {
+    LogDebug("CreateScrollBox called");
 
-  abort();
+    QWidget* parentWidget =
+        parent ? reinterpret_cast<QWidget*>(parent) : nullptr;
+
+    // QScrollArea is the Qt equivalent of a PixInsight ScrollBox
+    QScrollArea* scroll = new QScrollArea(parentWidget);
+
+    // PCL-style behaviour:
+    // - widgetResizable = true allows automatic sizing of contents
+    scroll->setWidgetResizable(true);
+
+    // Scrollbars appear as needed
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    // Register in MockControl system
+    control_handle handle = reinterpret_cast<control_handle>(scroll);
+    MockControl* mc = GetOrCreateMockControl(handle);
+
+    // Set owner API/client handles (if your framework uses them)
+    //    mc->apiHandle    = api;
+    mc->clientHandle = client;
+
+    LogDebug("ScrollBox created: handle=" +
+             std::to_string(reinterpret_cast<std::uintptr_t>(handle)));
+
+    return handle;
 }
-control_handle API_ScrollBox_CreateScrollBoxViewport(control_handle, api_handle client)
+
+control_handle API_ScrollBox_CreateScrollBoxViewport(
+        control_handle scrollBoxHandle,
+        api_handle client )
 {
+    LogDebug("CreateScrollBoxViewport called");
 
-  abort();
+    if (!scrollBoxHandle) {
+        LogDebug("CreateScrollBoxViewport: null scroll box");
+        return nullptr;
+    }
+
+    QScrollArea* scroll =
+        reinterpret_cast<QScrollArea*>(scrollBoxHandle);
+
+    // Create viewport widget — this is the content widget inside the scrollbox.
+    QWidget* viewport = new QWidget(scroll);
+    viewport->setObjectName("ScrollBoxViewport");
+
+    // This is important: assign it as the scrollbox’s widget.
+    scroll->setWidget(viewport);
+
+    // Register with mock control system
+    control_handle viewportHandle =
+        reinterpret_cast<control_handle>(viewport);
+
+    MockControl* mc = GetOrCreateMockControl(viewportHandle);
+    mc->clientHandle = client;
+
+    LogDebug("ScrollBox viewport created: handle=" +
+             std::to_string(reinterpret_cast<std::uintptr_t>(viewportHandle)));
+
+    return viewportHandle;
 }
+
 void API_ScrollBox_GetScrollBarsVisible(const_control_handle, api_bool*, api_bool*)
 {
 
@@ -9586,131 +11308,6 @@ api_bool API_ViewList_SetViewListCurrentViewUpdatedEventRoutine(control_handle, 
 // BitmapContext API
 // ----------------------------------------------------------------------------
 
-bitmap_handle API_Bitmap_CreateBitmap(api_handle, int32, int32, void*)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_CreateBitmapXPM(api_handle, const char**)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_CreateBitmapFromFile(api_handle, const char16_type*)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_CreateBitmapFromFile8(api_handle, const char*)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_CreateBitmapFromData(api_handle, const void*, size_type, const char*, uint32)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_CreateEmptyBitmap(api_handle)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_CloneBitmap(api_handle, const_bitmap_handle)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_CloneBitmapRect(api_handle, const_bitmap_handle, int32, int32, int32, int32)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_CreateBitmapFromSVG(api_handle, const char*, int32, int32, uint32 flags)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_CreateBitmapFromSVGFile(api_handle, const char16_type*, int32, int32, uint32 flags)
-{
-
-  abort();
-}
-int32 API_Bitmap_GetBitmapFormat(bitmap_handle)
-{
-
-  abort();
-}
-void API_Bitmap_SetBitmapFormat(bitmap_handle, int32)
-{
-
-  abort();
-}
-unsigned int *API_Bitmap_GetBitmapScanLine(bitmap_handle, int32)
-{
-
-  abort();
-}
-api_bool API_Bitmap_GetBitmapDimensions(const_bitmap_handle, int32*, int32*)
-{
-
-  abort();
-}
-api_bool API_Bitmap_IsEmptyBitmap(const_bitmap_handle)
-{
-
-  abort();
-}
-uint32 API_Bitmap_GetBitmapPixel(const_bitmap_handle, int32, int32)
-{
-
-  abort();
-}
-void API_Bitmap_SetBitmapPixel(bitmap_handle, int32, int32, uint32)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_MirroredBitmap(const_bitmap_handle, api_bool h, api_bool v)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_ScaledBitmap(const_bitmap_handle, int32, int32, api_bool)
-{
-
-  abort();
-}
-bitmap_handle API_Bitmap_RotatedBitmap(const_bitmap_handle, double, api_bool)
-{
-
-  abort();
-}
-api_bool API_Bitmap_LoadBitmap(bitmap_handle, const char16_type*)
-{
-
-  abort();
-}
-api_bool API_Bitmap_SaveBitmap(const_bitmap_handle, const char16_type*, int32 q)
-{
-
-  abort();
-}
-api_bool API_Bitmap_LoadBitmapData(bitmap_handle, const void*, size_type, const char*, uint32)
-{
-
-  abort();
-}
-void API_Bitmap_CopyBitmap(bitmap_handle, int32, int32, const_bitmap_handle, int32, int32, int32, int32)
-{
-
-  abort();
-}
-void API_Bitmap_FillBitmap(bitmap_handle, int32, int32, int32, int32, uint32)
-{
-
-  abort();
-}
 void API_Bitmap_OrBitmap(bitmap_handle, int32, int32, int32, int32, uint32)
 {
 
@@ -9752,16 +11349,6 @@ void API_Bitmap_ReplaceBitmapColor(bitmap_handle, int32, int32, int32, int32, ui
   abort();
 }
 void API_Bitmap_SetBitmapAlpha(bitmap_handle, int32, int32, int32, int32, uint8)
-{
-
-  abort();
-}
-void API_Bitmap_GetBitmapDevicePixelRatio(const_bitmap_handle, double*)
-{
-
-  abort();
-}
-void API_Bitmap_SetBitmapDevicePixelRatio(bitmap_handle, double)
 {
 
   abort();
@@ -13620,3 +15207,4 @@ void API_NetworkTransfer_GetNetworkTransferTotalSpeed(const_network_transfer_han
 
 }  // extern "C"
 
+#include "PCLMockAPI.moc"
