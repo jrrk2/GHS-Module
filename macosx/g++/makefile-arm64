@@ -27,7 +27,7 @@ SRC_FILES= \
 ../../GHSModule.cpp \
 ../../GHSParameters.cpp \
 ../../GHSProcess.cpp \
-../../main.cpp \
+../../test_interface.cpp \
 ../../PCLMockAPI.cpp \
 ../../PCLThreadMock.cpp \
 ../../RgbPreserve.cpp \
@@ -42,7 +42,7 @@ OBJ_FILES= \
 ./arm64/Release/GHSModule.o \
 ./arm64/Release/GHSParameters.o \
 ./arm64/Release/GHSProcess.o \
-./arm64/Release/main.o \
+./arm64/Release/test_interface.o \
 ./arm64/Release/PCLMockAPI.o \
 ./arm64/Release/PCLThreadMock.o \
 ./arm64/Release/RgbPreserve.o \
@@ -57,7 +57,7 @@ DEP_FILES= \
 ./arm64/Release/GHSModule.d \
 ./arm64/Release/GHSParameters.d \
 ./arm64/Release/GHSProcess.d \
-./arm64/Release/main.d \
+./arm64/Release/test_interface.d \
 ./arm64/Release/PCLMockAPI.d \
 ./arm64/Release/PCLThreadMock.d \
 ./arm64/Release/RgbPreserve.d \

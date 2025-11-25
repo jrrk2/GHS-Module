@@ -16,6 +16,7 @@
 #include <QSpinBox>
 #include <QLabel>
 #include <QScreen>
+#include <QApplication>
 #include <QGuiApplication>
 #include <QPixmap>
 #include <QImage>
@@ -32,9 +33,9 @@
 #include <QLineEdit>
 #include <QTextEdit>
 #include <QGroupBox>
+#include <QTimer>
+#include <QBitmap>
 /*
-#include <>
-#include <>
 #include <>
 #include <>
 */
@@ -231,6 +232,10 @@ static inline void LogDbg(const std::string& msg) {
 
 static inline void LogDbg(const pcl::String& msg) {
     LogDebug(msg.ToUTF8().c_str());
+}
+
+static inline void LogDbg(const QString& msg) {
+  //    LogDebug(msg);
 }
 
 inline void LogDbg(const char* msg) {
@@ -699,7 +704,7 @@ api_bool API_Control_SetEnterEventRoutine(control_handle handle, api_handle rece
                                           pcl::control_event_routine handler)
 {
     LogDbg("SetEnterEventRoutine called");
-    
+    /*    
     std::lock_guard<std::mutex> lock(g_control_map_mutex);
     auto it = g_control_map.find(handle);
     if (it == g_control_map.end()) return api_false;
@@ -709,6 +714,7 @@ api_bool API_Control_SetEnterEventRoutine(control_handle handle, api_handle rece
     ctrl->enterReceiver = receiver;
     
     EnableEvents(handle, ctrl);
+    */
     return api_true;
 }
 
@@ -716,7 +722,7 @@ api_bool API_Control_SetLeaveEventRoutine(control_handle handle, api_handle rece
                                           pcl::control_event_routine handler)
 {
     LogDbg("SetLeaveEventRoutine called");
-    
+    /*    
     std::lock_guard<std::mutex> lock(g_control_map_mutex);
     auto it = g_control_map.find(handle);
     if (it == g_control_map.end()) return api_false;
@@ -726,6 +732,7 @@ api_bool API_Control_SetLeaveEventRoutine(control_handle handle, api_handle rece
     ctrl->leaveReceiver = receiver;
     
     EnableEvents(handle, ctrl);
+    */
     return api_true;
 }
 
@@ -2431,6 +2438,7 @@ static MockControl* GetOrCreateMockControl(control_handle handle) {
 
 api_bool API_Control_GetControlResourcePixelRatio(const_control_handle handle, double* ratio)
 {
+  /*
     LogDebug("GetControlResourcePixelRatio called");
     
     if (!ratio) {
@@ -2457,7 +2465,8 @@ api_bool API_Control_GetControlResourcePixelRatio(const_control_handle handle, d
             *ratio = 1.0;
         }
     }
-    
+  */
+    *ratio = 1.0;
     return api_true;
 }
 
@@ -2690,14 +2699,28 @@ api_bool API_Control_GetControlVisible(const_control_handle handle)
     return widget->isVisible() ? api_true : api_false;
 }
 
-void API_Control_SetControlVisible(control_handle handle, api_bool visible)
+void API_Control_SetControlVisible(control_handle handle, api_bool visibleFlags)
 {
-    LogDebug("SetControlVisible called, visible=" + std::to_string(visible));
-    
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
-    widget->setVisible(visible != 0);
+    LogDebug("SetControlVisible called, flags=" + std::to_string(visibleFlags));
+
+    if (!handle)
+        return;
+
+    QWidget* w = reinterpret_cast<QWidget*>(handle);
+
+    // Bit 0 means "should be visible"
+    bool shouldBeVisible = (visibleFlags & 0x0001) != 0;
+
+    // PixInsight uses extra bits for deferred show (0x0100)
+    bool deferredShow = (visibleFlags & 0x0100) != 0;
+
+    if (deferredShow) {
+        // store state but do nothing yet
+      //        mockVisibilityState[handle] = visibleFlags;
+        return;
+    }
+
+    w->setVisible(shouldBeVisible);
 }
 
 void API_Control_ShowControl(control_handle handle)
@@ -4518,6 +4541,173 @@ struct MockGroupBox {
 
 static std::map<control_handle, MockGroupBox*> g_groupbox_map;
 static std::mutex g_groupbox_map_mutex;
+
+struct MockTimer {
+    QTimer* timer;
+    api_handle clientHandle;
+    pcl::timer_event_routine timeoutHandler;
+
+    MockTimer()
+        : timer(new QTimer()),
+          clientHandle(nullptr),
+          timeoutHandler(nullptr)
+    {
+        timer->setSingleShot(false); // PixInsight timers are repeating by default
+    }
+
+    ~MockTimer() {
+        // QTimer deleted by Qt parent hierarchy if parented
+    }
+};
+
+static std::map<control_handle, MockTimer*> g_timer_map;
+static std::mutex g_timer_map_mutex;
+
+struct MockFont {
+    QFont font;
+    api_handle clientHandle;
+
+    MockFont(const QFont& f, api_handle client)
+        : font(f)
+        , clientHandle(client)
+    {
+    }
+};
+
+static std::map<const_font_handle, MockFont*> g_font_map;
+static std::mutex g_font_map_mutex;
+
+font_handle API_Font_CreateFontByFamily(api_handle client, int32 weight, double sizePt)
+{
+    QString family = QFont().defaultFamily();  // default family
+    QFont f(family, sizePt);
+    f.setPointSizeF(sizePt);
+    f.setWeight(weight);
+
+    MockFont* mf = new MockFont(f, client);
+
+    font_handle handle = reinterpret_cast<font_handle>(mf);
+    {
+        std::lock_guard<std::mutex> lock(g_font_map_mutex);
+        g_font_map[handle] = mf;
+    }
+    return handle;
+}
+
+font_handle API_Font_CreateFontByFace(api_handle client, const char16_type* face, double ptSize)
+{
+    QString family = QString::fromUtf16(reinterpret_cast<const ushort*>(face));
+    QFont f(family, ptSize);
+    f.setPointSizeF(ptSize);
+
+    MockFont* mf = new MockFont(f, client);
+
+    font_handle h = reinterpret_cast<font_handle>(mf);
+    {
+        std::lock_guard<std::mutex> lock(g_font_map_mutex);
+        g_font_map[h] = mf;
+    }
+    return h;
+}
+
+font_handle API_Control_GetControlFont(const_control_handle handle)
+{
+    LogDbg("API_Control_GetControlFont called");
+
+    const QWidget* w = reinterpret_cast<const QWidget*>(handle);
+    if (!w)
+        return nullptr;
+
+    QFont f = w->font();
+
+    MockFont* mf = new MockFont(f, nullptr);
+
+    font_handle h = reinterpret_cast<font_handle>(mf);
+    {
+        std::lock_guard<std::mutex> lock(g_font_map_mutex);
+        g_font_map[h] = mf;
+    }
+
+    return h;
+}
+
+struct MockCursor {
+    QCursor cursor;
+    api_handle clientHandle;
+
+    MockCursor(const QCursor& c, api_handle client)
+        : cursor(c)
+        , clientHandle(client)
+    {
+    }
+};
+
+static std::map<cursor_handle, MockCursor*> g_cursor_map;
+static std::mutex g_cursor_map_mutex;
+
+cursor_handle API_Cursor_CreateCursor(api_handle client,
+                                      int32 hot)
+{
+    LogDbg("API_Cursor_CreateCursor called");
+
+    QString bitmapFile;
+    QString maskFile;
+    QCursor qc;
+
+    if (!bitmapFile.isEmpty())
+    {
+        QPixmap pm(bitmapFile);
+        if (!pm.isNull())
+        {
+            if (!maskFile.isEmpty()) {
+                QBitmap mask(maskFile);
+                if (!mask.isNull())
+                    pm.setMask(mask);
+            }
+            qc = QCursor(pm, hot, hot);
+        }
+        else {
+            LogDbg("[Cursor] Failed to load bitmap: " + bitmapFile);
+            qc = QCursor(Qt::ArrowCursor);
+        }
+    }
+    else {
+        // No-file case: default to Arrow cursor
+        qc = QCursor(Qt::ArrowCursor);
+    }
+
+    MockCursor* mc = new MockCursor(qc, client);
+
+    cursor_handle h = reinterpret_cast<cursor_handle>(mc);
+
+    {
+        std::lock_guard<std::mutex> lock(g_cursor_map_mutex);
+        g_cursor_map[h] = mc;
+    }
+
+    return h;
+}
+
+struct MockImageWindow {
+    QWidget* window;       // or QMainWindow / QDialog
+    api_handle clientHandle;
+    // plus whatever else you store for image data, views, etc.
+};
+
+static std::map<window_handle, MockImageWindow*> g_image_window_map;
+static std::mutex g_image_window_map_mutex;
+
+static window_handle g_active_image_window = nullptr;
+
+struct MockView {
+    MockImage* image;
+    QString identifier;
+    api_handle clientHandle;
+};
+
+// View handling
+static std::map<const_view_handle, MockView*> g_view_map;
+static std::mutex g_view_map_mutex;
 
 // Mock implementations for Global API functions
 
@@ -6411,8 +6601,9 @@ extern "C"
    void        (API_Global_GetReadoutOptions)( api_readout_options* options )
    {
 
-     abort();
+     memset(options, 0, sizeof(api_readout_options));
    }
+  
    void        (API_Global_SetReadoutOptions)( const api_readout_options* options )
    {
 
@@ -9305,7 +9496,7 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
    void           (API_Control_SetControlMouseTrackingEnabled)( control_handle, api_bool )
    {
 
-     abort();
+     //     abort();
    }
 
    void           (API_Control_GetControlVisibleRect)( const_control_handle, int32*, int32*, int32*, int32* )
@@ -9426,7 +9617,7 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
    void           (API_Control_EnsureControlLayoutUpdated)( control_handle )
    {
 
-     abort();
+     //     abort();
    }
 
    void           (API_Control_ScrollControl)( control_handle, int32, int32 )
@@ -9578,11 +9769,6 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
      abort();
    }
 
-   font_handle    (API_Control_GetControlFont)( const_control_handle )
-   {
-
-     abort();
-   }
    void           (API_Control_SetControlFont)( control_handle, const_font_handle )
    {
 
@@ -9608,7 +9794,7 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
    void           (API_Control_SetWindowTitle)( control_handle, const char16_type* )
    {
 
-     abort();
+     //     abort();
    }
 
    api_bool       (API_Control_GetInfoText)( const_control_handle, char16_type*, size_type* )
@@ -9652,7 +9838,7 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
    void           (API_Control_SetWindowToolTip)( control_handle, const char16_type* )
    {
 
-     abort();
+     //     abort();
    }
 
    api_bool       (API_Control_GetControlDisplayPixelRatio)( const_control_handle, double* ratio)
@@ -9749,7 +9935,7 @@ int32 API_Frame_GetFrameStyle(const_control_handle)
 void API_Frame_SetFrameStyle(control_handle, int32)
 {
 
-  abort();
+  //  abort();
 }
 int32 API_Frame_GetFrameLineWidth(const_control_handle)
 {
@@ -9759,7 +9945,7 @@ int32 API_Frame_GetFrameLineWidth(const_control_handle)
 void API_Frame_SetFrameLineWidth(control_handle, int32)
 {
 
-  abort();
+  //  abort();
 }
 int32 API_Frame_GetFrameBorderWidth(const_control_handle)
 {
@@ -9771,21 +9957,100 @@ int32 API_Frame_GetFrameBorderWidth(const_control_handle)
 // GroupBoxContext API
 // ----------------------------------------------------------------------------
 
-control_handle API_GroupBox_CreateGroupBox(api_handle, api_handle client, const char16_type*, control_handle parent, uint32 flags)
+control_handle API_GroupBox_CreateGroupBox(
+        api_handle /*handle*/,
+        api_handle client,
+        const char16_type* title,
+        control_handle parent,
+        uint32 flags)
 {
+    LogDbg("API_GroupBox_CreateGroupBox called");
 
-  abort();
+    MockGroupBox* mg = new MockGroupBox();
+    mg->clientHandle = client;
+
+    QGroupBox* box = mg->box;
+
+    if (title && *title) {
+        QString q = QString::fromUtf16(reinterpret_cast<const ushort*>(title));
+        box->setTitle(q);
+    }
+
+    // Flags may include: checkable, flat, etc.
+    if (flags & 0x01)
+        box->setCheckable(true);
+    if (flags & 0x02)
+        box->setFlat(true);
+
+    if (parent) {
+        QWidget* p = reinterpret_cast<QWidget*>(parent);
+        box->setParent(p);
+    }
+
+    control_handle h = reinterpret_cast<control_handle>(box);
+
+    {
+        std::lock_guard<std::mutex> lock(g_groupbox_map_mutex);
+        g_groupbox_map[h] = mg;
+    }
+
+    return h;
 }
-api_bool API_GroupBox_GetGroupBoxTitle(const_control_handle, char16_type*, size_type*)
+
+api_bool API_GroupBox_GetGroupBoxTitle(
+        const_control_handle handle,
+        char16_type* text,
+        size_type* len)
 {
+    LogDbg("API_GroupBox_GetGroupBoxTitle called");
 
-  abort();
+    std::lock_guard<std::mutex> lock(g_groupbox_map_mutex);
+    auto it = g_groupbox_map.find(const_cast<control_handle>(handle));
+
+    if (it == g_groupbox_map.end()) {
+        if (len) *len = 0;
+        return api_false;
+    }
+
+    QString title = it->second->box->title();
+    std::u16string u16 = title.toStdU16String();
+
+    if (!text) {
+        if (len) *len = u16.length();
+        return api_true;
+    }
+
+    if (!len || *len == 0)
+        return api_false;
+
+    size_type copyLen = std::min(*len - 1, (size_type)u16.length());
+    memcpy(text, u16.c_str(), copyLen * sizeof(char16_type));
+    text[copyLen] = 0;
+    *len = copyLen;
+
+    return api_true;
 }
-void API_GroupBox_SetGroupBoxTitle(control_handle, const char16_type*)
+  
+api_bool API_GroupBox_SetGroupBoxTitle(
+        control_handle handle,
+        const char16_type* title)
 {
+    LogDbg("API_GroupBox_SetGroupBoxTitle called");
 
-  abort();
+    std::lock_guard<std::mutex> lock(g_groupbox_map_mutex);
+    auto it = g_groupbox_map.find(handle);
+
+    if (it == g_groupbox_map.end())
+        return api_false;
+
+    QGroupBox* box = it->second->box;
+
+    QString q = QString::fromUtf16(reinterpret_cast<const ushort*>(title));
+    box->setTitle(q);
+
+    return api_true;
 }
+  
 api_bool API_GroupBox_GetGroupBoxCheckable(const_control_handle)
 {
 
@@ -9796,16 +10061,38 @@ void API_GroupBox_SetGroupBoxCheckable(control_handle, api_bool)
 
   abort();
 }
-api_bool API_GroupBox_GetGroupBoxChecked(const_control_handle)
+api_bool API_GroupBox_GetGroupBoxChecked(const_control_handle handle)
 {
-  // returns true if group box checked
-  abort();
-}
-   void           (API_GroupBox_SetGroupBoxChecked)( control_handle, api_bool )
-   {
+    LogDbg("API_GroupBox_GetGroupBoxChecked called");
 
-     abort();
-   }
+    std::lock_guard<std::mutex> lock(g_groupbox_map_mutex);
+    auto it = g_groupbox_map.find(const_cast<control_handle>(handle));
+
+    if (it == g_groupbox_map.end())
+        return api_false;
+
+    return it->second->box->isChecked() ? api_true : api_false;
+}
+
+api_bool API_GroupBox_SetGroupBoxChecked(
+        control_handle handle,
+        api_bool checked)
+{
+    LogDbg("API_GroupBox_SetGroupBoxChecked called");
+
+    std::lock_guard<std::mutex> lock(g_groupbox_map_mutex);
+    auto it = g_groupbox_map.find(handle);
+    if (it == g_groupbox_map.end()) return api_false;
+
+    QGroupBox* box = it->second->box;
+
+    if (!box->isCheckable())
+        box->setCheckable(true);
+
+    box->setChecked(checked != api_false);
+
+    return api_true;
+}  
 
    api_bool       (API_GroupBox_SetGroupBoxCheckEventRoutine)( control_handle, api_handle, pcl::button_check_event_routine )
    {
@@ -10602,7 +10889,8 @@ void API_ComboBox_SetComboBoxListVisible(control_handle, api_bool)
 api_bool API_ComboBox_SetComboBoxItemSelectedEventRoutine(control_handle, api_handle, pcl::value_event_routine)
 {
 
-  abort();
+  //  abort();
+  return api_true;
 }
 api_bool API_ComboBox_SetComboBoxItemHighlightedEventRoutine(control_handle, api_handle, pcl::value_event_routine)
 {
@@ -10627,7 +10915,7 @@ int32 API_Slider_GetSliderStepSize(const_control_handle)
 void API_Slider_SetSliderStepSize(control_handle, int32)
 {
 
-  abort();
+  //  abort();
 }
 int32 API_Slider_GetSliderPageSize(const_control_handle)
 {
@@ -10679,7 +10967,7 @@ api_bool API_Slider_SetSliderValueUpdatedEventRoutine(
 
     if (!handle)
         return api_false;
-
+    /*
     std::lock_guard<std::mutex> lock(g_slider_map_mutex);
 
     MockSlider* sliderCtrl = nullptr;
@@ -10719,7 +11007,7 @@ api_bool API_Slider_SetSliderValueUpdatedEventRoutine(
             routine(sliderCtrl->clientHandle, h, slider->value());
         }
     });
-
+    */
     return api_true;
 }
   
@@ -10944,12 +11232,12 @@ void API_ScrollBox_SetScrollBarsVisible(control_handle, api_bool, api_bool)
 void API_ScrollBox_GetScrollBoxAutoScrollEnabled(const_control_handle, api_bool*, api_bool*)
 {
 
-  abort();
+  //   abort();
 }
 void API_ScrollBox_SetScrollBoxAutoScrollEnabled(control_handle, api_bool, api_bool)
 {
 
-  abort();
+  //  abort();
 }
 void API_ScrollBox_GetScrollBoxHorizontalRange(const_control_handle, int32*, int32*)
 {
@@ -11011,16 +11299,21 @@ void API_ScrollBox_SetScrollBoxTrackingEnabled(control_handle, api_bool, api_boo
 
   abort();
 }
+
 api_bool API_ScrollBox_SetScrollBoxHorizontalPosUpdatedEventRoutine(control_handle, api_handle, pcl::value_event_routine)
 {
 
-  abort();
+  //  abort();
+  return api_true;
 }
+
 api_bool API_ScrollBox_SetScrollBoxVerticalPosUpdatedEventRoutine(control_handle, api_handle, pcl::value_event_routine)
 {
 
-  abort();
+  //  abort();
+  return api_true;
 }
+
 api_bool API_ScrollBox_SetScrollBoxHorizontalRangeUpdatedEventRoutine(control_handle, api_handle, pcl::range_event_routine)
 {
 
@@ -11585,50 +11878,91 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
 // TimerContext API
 // ----------------------------------------------------------------------------
 
-timer_handle API_Timer_CreateTimer(api_handle, api_handle client, uint32 flags)
+control_handle API_Timer_CreateTimer(api_handle /*ignore*/, api_handle client)
 {
+    LogDbg("API_Timer_CreateTimer called");
 
-  abort();
+    MockTimer* mt = new MockTimer();
+    mt->clientHandle = client;
+
+    control_handle h = reinterpret_cast<control_handle>(mt->timer);
+
+    {
+        std::lock_guard<std::mutex> lock(g_timer_map_mutex);
+        g_timer_map[h] = mt;
+    }
+
+    return h;
 }
+
 void API_Timer_GetTimerInterval(const_timer_handle, uint32* msec)
 {
 
   abort();
 }
-void API_Timer_SetTimerInterval(timer_handle, uint32 msec)
+api_bool API_Timer_SetTimerInterval(control_handle handle, uint32 msec)
 {
+    LogDbg("API_Timer_SetInterval called");
 
-  abort();
+    std::lock_guard<std::mutex> lock(g_timer_map_mutex);
+    auto it = g_timer_map.find(handle);
+
+    if (it == g_timer_map.end())
+        return api_false;
+
+    it->second->timer->setInterval(static_cast<int>(msec));
+    return api_true;
 }
+  
 api_bool API_Timer_GetTimerSingleShot(const_timer_handle)
 {
 
-  abort();
+  //  abort();
+  return api_true;
 }
 void API_Timer_SetTimerSingleShot(timer_handle, api_bool)
 {
 
-  abort();
+  //  abort();
 }
 api_bool API_Timer_IsTimerActive(const_timer_handle)
 {
 
   abort();
 }
-api_bool API_Timer_StartTimer(timer_handle)
+api_bool API_Timer_StartTimer(control_handle handle)
 {
+    LogDbg("API_Timer_StartTimer called");
 
-  abort();
+    std::lock_guard<std::mutex> lock(g_timer_map_mutex);
+    auto it = g_timer_map.find(handle);
+
+    if (it == g_timer_map.end())
+        return api_false;
+
+    it->second->timer->start();
+    return api_true;
 }
-void API_Timer_StopTimer(timer_handle)
+
+api_bool API_Timer_StopTimer(control_handle handle)
 {
+    LogDbg("API_Timer_StopTimer called");
 
-  abort();
-}
+    std::lock_guard<std::mutex> lock(g_timer_map_mutex);
+    auto it = g_timer_map.find(handle);
+
+    if (it == g_timer_map.end())
+        return api_false;
+
+    it->second->timer->stop();
+    return api_true;
+}  
+
 api_bool API_Timer_SetTimerNotifyEventRoutine(timer_handle, api_handle, pcl::timer_event_routine)
 {
 
-  abort();
+  //  abort();
+  return api_true;
 }
 
 // ----------------------------------------------------------------------------
@@ -12151,16 +12485,6 @@ void API_Pen_SetPenBrush(pen_handle, const_brush_handle)
 // FontContext API
 // ----------------------------------------------------------------------------
 
-font_handle API_Font_CreateFontByFamily(api_handle, int32, double)
-{
-
-  abort();
-}
-font_handle API_Font_CreateFontByFace(api_handle, const char16_type*, double)
-{
-
-  abort();
-}
 font_handle API_Font_CloneFont(api_handle, const_font_handle)
 {
 
@@ -12311,11 +12635,33 @@ int32 API_Font_GetFontMaxWidth(const_font_handle)
 
   abort();
 }
-int32 API_Font_GetStringPixelWidth(const_font_handle, const char16_type*)
+int32 API_Font_GetStringPixelWidth(const_font_handle handle,
+                                   const char16_type* str16)
 {
+    LogDbg("API_Font_GetStringPixelWidth called");
 
-  abort();
+    if (!handle || !str16)
+        return 0;
+
+    std::lock_guard<std::mutex> lock(g_font_map_mutex);
+    auto it = g_font_map.find(handle);
+ 
+    if (it == g_font_map.end())
+        return 0;
+
+    MockFont* mf = it->second;
+    const QFont& font = mf->font;
+
+    QString s = QString::fromUtf16(
+        reinterpret_cast<const ushort*>(str16));
+
+    QFontMetrics fm(font);
+
+    int px = fm.horizontalAdvance(s);
+
+    return static_cast<int32>(px);
 }
+  
 int32 API_Font_GetCharPixelWidth(const_font_handle, int32)
 {
 
@@ -12371,11 +12717,6 @@ int32 API_Font_GetNominalFontWeight(const char16_type* font, const char16_type* 
 // CursorContext API
 // ----------------------------------------------------------------------------
 
-cursor_handle API_Cursor_CreateCursor(api_handle, int32)
-{
-
-  abort();
-}
 cursor_handle API_Cursor_CreateBitmapCursor(api_handle, const_bitmap_handle, int32, int32)
 {
 
@@ -13482,11 +13823,46 @@ void API_View_RemoveViewFromDynamicTargets(view_handle)
 
   abort();
 }
-image_handle API_View_GetViewImage(view_handle)
-{
 
-  abort();
+image_handle API_View_GetViewImage(const_view_handle vhandle)
+{
+    LogDbg("API_View_GetViewImage called");
+
+    if (!vhandle)
+        return nullptr;
+
+    MockView* mv = nullptr;
+
+    // Look up the view
+    {
+        std::lock_guard<std::mutex> lock(g_view_map_mutex);
+
+        auto it = g_view_map.find(vhandle);
+        if (it == g_view_map.end())
+            return nullptr;
+
+        mv = it->second;
+    }
+
+    // View without an image?
+    if (mv->image == nullptr)
+        return nullptr;
+
+    image_handle ih = reinterpret_cast<image_handle>(mv->image);
+
+    // Double-check the image exists in the map (safety only)
+    {
+        std::lock_guard<std::mutex> lock(g_image_map_mutex);
+        if (g_image_map.find(ih) == g_image_map.end())
+        {
+            // Should not happen — but if it does, insert it
+            g_image_map[ih] = mv->image;
+        }
+    }
+
+    return ih;
 }
+
 api_bool API_View_IsViewColorImage(const_view_handle)
 {
 
@@ -13599,8 +13975,11 @@ window_handle API_ImageWindow_GetImageWindowByFilePath(const char16_type*)
 }
 window_handle API_ImageWindow_GetActiveImageWindow()
 {
+    QWidget* w = QApplication::activeWindow();
+    if (!w)
+        return nullptr;
 
-  abort();
+    return reinterpret_cast<window_handle>(w);
 }
 void API_ImageWindow_EnumerateImageWindows(pcl::window_enumeration_callback, void*, api_bool includeIconic)
 {
