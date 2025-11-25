@@ -84,6 +84,16 @@ static pcl::Mutex s_cfitsio_mutex;
 // Event Handler Storage (updated MockControl structure)
 // ----------------------------------------------------------------------------
 
+
+struct TreeNode
+{
+    std::string text[3];
+    control_handle icon[3];
+    bool selected = false;
+};
+
+struct MockTreeBox ;
+
 // Update your existing MockControl structure to include these event handler fields:
 
 struct MockControl {
@@ -145,7 +155,9 @@ struct MockControl {
 
     pcl::event_routine editCompletedHandler;
     void* editCompletedReceiver;
-  
+
+    MockTreeBox *parent;
+   int flags;
     MockControl(QWidget* w = nullptr) 
         : widget(w ? w : new QWidget()),
           clientHandle(nullptr),
@@ -4691,6 +4703,7 @@ cursor_handle API_Cursor_CreateCursor(api_handle client,
 struct MockImageWindow {
     QWidget* window;       // or QMainWindow / QDialog
     api_handle clientHandle;
+    image_handle currentImage;
     // plus whatever else you store for image data, views, etc.
 };
 
@@ -4708,6 +4721,550 @@ struct MockView {
 // View handling
 static std::map<const_view_handle, MockView*> g_view_map;
 static std::mutex g_view_map_mutex;
+
+
+// Global maps already provided:
+extern std::map<control_handle, MockControl*> g_control_map;
+extern std::mutex g_control_map_mutex;
+
+// -----------------------------------------------------------------------------
+// TreeBox Mock API
+// -----------------------------------------------------------------------------
+
+struct MockTreeNode
+{
+    std::vector<String>          text;
+    std::vector<control_handle>  icon;
+    std::vector<String>          tooltip;
+
+    bool selected = false;
+
+    explicit MockTreeNode( int columns )
+    {
+        text.resize( columns );
+        icon.resize( columns, nullptr );
+        tooltip.resize( columns );
+    }
+};
+
+struct MockTreeBox : MockControl
+{
+    int columns = 1;
+    std::vector<MockTreeNode*> nodes;
+
+    control_handle viewport = nullptr;
+
+    bool multipleSelections = false;
+    bool rootDecoration     = false;
+    bool alternateRowColor  = false;
+
+    MockTreeBox() = default;
+
+    ~MockTreeBox()
+    {
+        for ( MockTreeNode* n : nodes )
+            delete n;
+    }
+};
+
+// These should already exist in your file:
+extern std::map<control_handle, MockControl*> g_control_map;
+extern std::mutex g_control_map_mutex;
+
+// Small helper – avoids dynamic_cast on non-polymorphic MockControl.
+static MockTreeBox* GetTreeBox( control_handle h )
+{
+    auto it = g_control_map.find( h );
+    if ( it == g_control_map.end() )
+        return nullptr;
+    return static_cast<MockTreeBox*>( it->second );
+}
+
+// -----------------------------------------------------------------------------
+// Create TreeBox
+// -----------------------------------------------------------------------------
+
+control_handle API_TreeBox_CreateTreeBox( api_handle, api_handle,
+                                          control_handle parentHandle, uint32 flags )
+{
+    std::lock_guard<std::mutex> lock( g_control_map_mutex );
+
+    MockTreeBox* tb = new MockTreeBox();
+    tb->flags = flags;
+    // NOTE: We deliberately do not assign tb->parent here, since the type of
+    //       MockControl::parent in your existing code caused a mismatch.
+    //       If you need it later, copy whatever pattern you use in
+    //       API_Control_CreateControl, e.g.:
+    //       tb->parent = parentHandle ? g_control_map[parentHandle] : nullptr;
+
+    control_handle hTB = reinterpret_cast<control_handle>( tb );
+    g_control_map[hTB] = tb;
+
+    // Create a simple viewport child control.
+    MockControl* vp = new MockControl();
+    // If your MockControl has a parent/owner field, you can assign it here
+    // using the same type as in your struct. We avoid it to keep this generic.
+    control_handle hVP = reinterpret_cast<control_handle>( vp );
+    g_control_map[hVP] = vp;
+
+    tb->viewport = hVP;
+
+    return hTB;
+}
+
+// -----------------------------------------------------------------------------
+// Column management
+// -----------------------------------------------------------------------------
+
+api_bool API_TreeBox_SetNumberOfColumns( control_handle h, int32 n )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb )
+        return api_false;
+
+    tb->columns = (n > 0) ? n : 1;
+    return api_true;
+}
+
+api_bool API_TreeBox_GetNumberOfColumns( control_handle h, int32* n )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb || n == nullptr )
+        return api_false;
+
+    *n = tb->columns;
+    return api_true;
+}
+
+api_bool API_TreeBox_AdjustColumnWidthToContents( control_handle, int32 )
+{
+    // No-op in mock
+    return api_true;
+}
+
+// -----------------------------------------------------------------------------
+// Node management
+// -----------------------------------------------------------------------------
+
+api_bool API_TreeBox_Clear( control_handle h )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb )
+        return api_false;
+
+    for ( MockTreeNode* n : tb->nodes )
+        delete n;
+    tb->nodes.clear();
+    return api_true;
+}
+
+api_bool API_TreeBox_GetNumberOfNodes( control_handle h, int32* n )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb || n == nullptr )
+        return api_false;
+
+    *n = int32( tb->nodes.size() );
+    return api_true;
+}
+
+control_handle API_TreeBox_InsertNode( control_handle h, int32 index )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb )
+        return nullptr;
+
+    if ( index < 0 || index > int32( tb->nodes.size() ) )
+        index = int32( tb->nodes.size() );
+
+    MockTreeNode* node = new MockTreeNode( tb->columns );
+    tb->nodes.insert( tb->nodes.begin() + index, node );
+
+    return reinterpret_cast<control_handle>( node );
+}
+
+api_bool API_TreeBox_RemoveNode( control_handle h, int32 index )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb )
+        return api_false;
+
+    if ( index < 0 || index >= int32( tb->nodes.size() ) )
+        return api_false;
+
+    delete tb->nodes[index];
+    tb->nodes.erase( tb->nodes.begin() + index );
+    return api_true;
+}
+
+control_handle API_TreeBox_GetNode( control_handle h, int32 index )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb )
+        return nullptr;
+
+    if ( index < 0 || index >= int32( tb->nodes.size() ) )
+        return nullptr;
+
+    return reinterpret_cast<control_handle>( tb->nodes[index] );
+}
+
+api_bool API_TreeBox_GetNodeIndex( control_handle h,
+                                   control_handle nodeHandle,
+                                   int32* index )
+{
+    MockTreeBox* tb      = GetTreeBox( h );
+    MockTreeNode* target = reinterpret_cast<MockTreeNode*>( nodeHandle );
+
+    if ( !tb || !index || !target )
+        return api_false;
+
+    for ( size_t i = 0; i < tb->nodes.size(); ++i )
+        if ( tb->nodes[i] == target )
+        {
+            *index = int32( i );
+            return api_true;
+        }
+
+    return api_false;
+}
+
+// -----------------------------------------------------------------------------
+// Node text & icon & tooltip
+// -----------------------------------------------------------------------------
+
+api_bool API_TreeBox_SetNodeText( control_handle hNode, int32 col, const char* text )
+{
+    MockTreeNode* node = reinterpret_cast<MockTreeNode*>( hNode );
+    if ( !node )
+        return api_false;
+
+    if ( col < 0 || col >= int32( node->text.size() ) )
+        return api_false;
+
+    node->text[col] = text ? String( text ) : String();
+    return api_true;
+}
+
+api_bool API_TreeBox_GetNodeText( control_handle hNode, int32 col,
+                                  char* buffer, size_type* len )
+{
+    MockTreeNode* node = reinterpret_cast<MockTreeNode*>( hNode );
+    if ( !node || !len )
+        return api_false;
+
+    if ( col < 0 || col >= int32( node->text.size() ) )
+        return api_false;
+
+    const String& t = node->text[col];
+
+    if ( buffer == nullptr )
+    {
+        *len = t.Length();
+        return api_true;
+    }
+
+    // PCL strings are UTF-16 (char16_type). We just copy the raw data.
+    ::memcpy( buffer, t.c_str(), t.Length() * sizeof( char16_type ) );
+    return api_true;
+}
+
+api_bool API_TreeBox_SetNodeIcon( control_handle hNode, int32 col, control_handle icon )
+{
+    MockTreeNode* node = reinterpret_cast<MockTreeNode*>( hNode );
+    if ( !node )
+        return api_false;
+
+    if ( col < 0 || col >= int32( node->icon.size() ) )
+        return api_false;
+
+    node->icon[col] = icon;
+    return api_true;
+}
+
+api_bool API_TreeBox_SetNodeToolTip( control_handle hNode, int32 col, const char* text )
+{
+    MockTreeNode* node = reinterpret_cast<MockTreeNode*>( hNode );
+    if ( !node )
+        return api_false;
+
+    if ( col < 0 || col >= int32( node->tooltip.size() ) )
+        return api_false;
+
+    node->tooltip[col] = text ? String( text ) : String();
+    return api_true;
+}
+
+// -----------------------------------------------------------------------------
+// Selection
+// -----------------------------------------------------------------------------
+
+api_bool API_TreeBox_SelectNode( control_handle h,
+                                 control_handle hNode,
+                                 api_bool selected )
+{
+    MockTreeBox*  tb   = GetTreeBox( h );
+    MockTreeNode* node = reinterpret_cast<MockTreeNode*>( hNode );
+
+    if ( !tb || !node )
+        return api_false;
+
+    if ( !tb->multipleSelections )
+        for ( MockTreeNode* n : tb->nodes )
+            n->selected = false;
+
+    node->selected = (selected != api_false);
+    return api_true;
+}
+
+api_bool API_TreeBox_IsNodeSelected( control_handle hNode, api_bool* result )
+{
+    MockTreeNode* node = reinterpret_cast<MockTreeNode*>( hNode );
+    if ( !node || !result )
+        return api_false;
+
+    *result = node->selected ? api_true : api_false;
+    return api_true;
+}
+
+api_bool API_TreeBox_SelectAllNodes( control_handle h )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb )
+        return api_false;
+
+    if ( !tb->multipleSelections )
+        return api_false;
+
+    for ( MockTreeNode* n : tb->nodes )
+        n->selected = true;
+    return api_true;
+}
+
+api_bool API_TreeBox_HasSelectedNodes( control_handle h, api_bool* r )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb || !r )
+        return api_false;
+
+    *r = api_false;
+    for ( MockTreeNode* n : tb->nodes )
+        if ( n->selected )
+        {
+            *r = api_true;
+            break;
+        }
+
+    return api_true;
+}
+
+// -----------------------------------------------------------------------------
+// Navigation
+// -----------------------------------------------------------------------------
+
+api_bool API_TreeBox_GetCurrentNode( control_handle h, control_handle* node )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb || !node )
+        return api_false;
+
+    for ( MockTreeNode* n : tb->nodes )
+        if ( n->selected )
+        {
+            *node = reinterpret_cast<control_handle>( n );
+            return api_true;
+        }
+
+    *node = nullptr;
+    return api_true;
+}
+
+api_bool API_TreeBox_SetCurrentNode( control_handle h, control_handle hNode )
+{
+    MockTreeBox*  tb   = GetTreeBox( h );
+    MockTreeNode* node = reinterpret_cast<MockTreeNode*>( hNode );
+
+    if ( !tb || !node )
+        return api_false;
+
+    for ( MockTreeNode* n : tb->nodes )
+        n->selected = false;
+
+    node->selected = true;
+    return api_true;
+}
+
+api_bool API_TreeBox_GetNextNode( control_handle h,
+                                  control_handle hNode,
+                                  control_handle* next )
+{
+    MockTreeBox*  tb   = GetTreeBox( h );
+    MockTreeNode* node = reinterpret_cast<MockTreeNode*>( hNode );
+
+    if ( !tb || !node || !next )
+        return api_false;
+
+    for ( size_t i = 0; i < tb->nodes.size(); ++i )
+        if ( tb->nodes[i] == node )
+        {
+            if ( i + 1 < tb->nodes.size() )
+                *next = reinterpret_cast<control_handle>( tb->nodes[i+1] );
+            else
+                *next = nullptr;
+            return api_true;
+        }
+
+    return api_false;
+}
+
+api_bool API_TreeBox_GetPrevNode( control_handle h,
+                                  control_handle hNode,
+                                  control_handle* prev )
+{
+    MockTreeBox*  tb   = GetTreeBox( h );
+    MockTreeNode* node = reinterpret_cast<MockTreeNode*>( hNode );
+
+    if ( !tb || !node || !prev )
+        return api_false;
+
+    for ( size_t i = 0; i < tb->nodes.size(); ++i )
+        if ( tb->nodes[i] == node )
+        {
+            if ( i > 0 )
+                *prev = reinterpret_cast<control_handle>( tb->nodes[i-1] );
+            else
+                *prev = nullptr;
+            return api_true;
+        }
+
+    return api_false;
+}
+
+// -----------------------------------------------------------------------------
+// Settings
+// -----------------------------------------------------------------------------
+
+api_bool API_TreeBox_EnableMultipleSelections( control_handle h, api_bool e )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb )
+        return api_false;
+
+    tb->multipleSelections = (e != api_false);
+    return api_true;
+}
+
+api_bool API_TreeBox_DisableRootDecoration( control_handle h, api_bool )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb )
+        return api_false;
+
+    tb->rootDecoration = false;
+    return api_true;
+}
+
+api_bool API_TreeBox_EnableAlternateRowColor( control_handle h, api_bool e )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    if ( !tb )
+        return api_false;
+
+    tb->alternateRowColor = (e != api_false);
+    return api_true;
+}
+
+// -----------------------------------------------------------------------------
+// Height management
+// -----------------------------------------------------------------------------
+
+api_bool API_TreeBox_SetFixedHeight( control_handle, int32 )
+{
+    return api_true; // no-op
+}
+
+api_bool API_TreeBox_SetMinHeight( control_handle, int32 )
+{
+    return api_true;
+}
+
+api_bool API_TreeBox_SetMaxHeight( control_handle, int32 )
+{
+    return api_true;
+}
+
+// -----------------------------------------------------------------------------
+// Viewport
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// Create TreeBox Viewport
+// -----------------------------------------------------------------------------
+
+control_handle API_TreeBox_CreateTreeBoxViewport( control_handle parentHandle,
+                                                  api_handle /*client*/ )
+{
+    std::lock_guard<std::mutex> lock( g_control_map_mutex );
+
+    // Viewport is just another MockControl in the mock framework
+    MockControl* vp = new MockControl();
+    control_handle hVP = reinterpret_cast<control_handle>( vp );
+    g_control_map[hVP] = vp;
+
+    // Attach viewport to its TreeBox
+    MockTreeBox* tb = GetTreeBox( parentHandle );
+    if ( tb )
+        tb->viewport = hVP;
+
+    return hVP;
+}
+
+control_handle API_TreeBox_GetViewportHandle( control_handle h )
+{
+    MockTreeBox* tb = GetTreeBox( h );
+    return tb ? tb->viewport : nullptr;
+}
+
+// -----------------------------------------------------------------------------
+// Event routines (stored but not auto-invoked in the mock)
+// -----------------------------------------------------------------------------
+
+typedef void *treebox_currentnodeupdated_event;
+typedef void * treebox_node_event ;
+typedef void * treebox_tree_event ;
+
+struct TreeBoxEventRoutines
+{
+    treebox_currentnodeupdated_event currentNodeUpdated = nullptr;
+    treebox_node_event               nodeActivated      = nullptr;
+    treebox_tree_event               selectionUpdated   = nullptr;
+};
+
+static std::map<control_handle, TreeBoxEventRoutines> g_tree_events;
+
+api_bool API_TreeBox_SetCurrentNodeUpdatedEventRoutine( control_handle h,
+                                                        control_handle /*receiver*/,
+                                                        treebox_currentnodeupdated_event f )
+{
+    g_tree_events[h].currentNodeUpdated = f;
+    return api_true;
+}
+
+api_bool API_TreeBox_SetNodeActivatedEventRoutine( control_handle h,
+                                                   control_handle /*receiver*/,
+                                                   treebox_node_event f )
+{
+    g_tree_events[h].nodeActivated = f;
+    return api_true;
+}
+
+api_bool API_TreeBox_SetNodeSelectionUpdatedEventRoutine( control_handle h,
+                                                          control_handle /*receiver*/,
+                                                          treebox_tree_event f )
+{
+    g_tree_events[h].selectionUpdated = f;
+    return api_true;
+}
 
 // Mock implementations for Global API functions
 
@@ -9772,7 +10329,7 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
    void           (API_Control_SetControlFont)( control_handle, const_font_handle )
    {
 
-     abort();
+     //     abort();
    }
 
    void           (API_Control_GetWindowOpacity)( const_control_handle, double* )
@@ -11329,16 +11886,6 @@ api_bool API_ScrollBox_SetScrollBoxVerticalRangeUpdatedEventRoutine(control_hand
 // TreeBoxContext API
 // ----------------------------------------------------------------------------
 
-control_handle API_TreeBox_CreateTreeBox(api_handle, api_handle client, control_handle parent, uint32 flags)
-{
-
-  abort();
-}
-control_handle API_TreeBox_CreateTreeBoxViewport(control_handle, api_handle client)
-{
-
-  abort();
-}
 api_handle API_TreeBox_CreateTreeBoxNode(api_handle, api_handle nodeClient)
 {
 
@@ -12515,15 +13062,18 @@ void API_Font_SetFontPixelSize(font_handle, int32)
 
   abort();
 }
-void API_Font_GetFontPointSize(const_font_handle, double*)
+
+void API_Font_GetFontPointSize(const_font_handle, double* sz)
 {
 
-  abort();
+  //  abort();
+  *sz = 12.0;
 }
+
 void API_Font_SetFontPointSize(font_handle, double)
 {
 
-  abort();
+  //  abort();
 }
 api_bool API_Font_GetFontFixedPitch(const_font_handle)
 {
@@ -12568,22 +13118,27 @@ void API_Font_SetFontWeight(font_handle, int32)
 api_bool API_Font_GetFontItalic(const_font_handle)
 {
 
-  abort();
+  //  abort();
+  return api_false;
 }
+
 void API_Font_SetFontItalic(font_handle, api_bool)
 {
 
-  abort();
+  //  abort();
+  
 }
+
 api_bool API_Font_GetFontUnderline(const_font_handle)
 {
 
-  abort();
+  //  abort();
+  return api_false;
 }
 void API_Font_SetFontUnderline(font_handle, api_bool)
 {
 
-  abort();
+  //  abort();
 }
 api_bool API_Font_GetFontOverline(const_font_handle)
 {
@@ -12615,11 +13170,14 @@ int32 API_Font_GetFontDescent(const_font_handle)
 
   abort();
 }
+
 int32 API_Font_GetFontHeight(const_font_handle)
 {
 
-  abort();
+  //  abort();
+  return 12;
 }
+
 int32 API_Font_GetFontLineSpacing(const_font_handle)
 {
 
@@ -13948,31 +14506,103 @@ api_bool API_View_ComputeViewProperty(api_handle hModule, view_handle, const cha
 // ImageWindowContext API
 // ----------------------------------------------------------------------------
 
-window_handle API_ImageWindow_CreateImageWindow(int32 width, int32 height, int32 numberOfChannels, int32 bitsPerSample, api_bool floatSample, api_bool color, api_bool initialProcessing, const char* id)
-{
+// -----------------------------------------------------------------------------
+// ImageWindow Creation
+// -----------------------------------------------------------------------------
 
-  abort();
+window_handle API_ImageWindow_CreateImageWindow(
+    int32 width,
+    int32 height,
+    int32 numberOfChannels,
+    int32 bitsPerSample,
+    api_bool floatSample,
+    api_bool color,
+    api_bool initialProcessing,
+    const char* id )
+{
+    // Create underlying Qt window
+    QWidget* win = new QWidget();
+    win->setWindowTitle( id ? id : "ImageWindow" );
+    win->resize( width, height );
+
+    // Allocate a PCL-style view + image to attach to this window
+    MockImageWindow* mw = new MockImageWindow();
+    mw->window = win;
+
+    // Register window in global map
+    {
+        std::lock_guard<std::mutex> lock( g_view_map_mutex );
+        g_image_window_map[ win ] = mw;
+    }
+
+    // ---- Allocate Image Data --------------------------------------------------
+    MockImage* img = new MockImage();
+    img->width          = width;
+    img->height         = height;
+    img->channels       = numberOfChannels;
+    img->bitsPerSample  = bitsPerSample;
+    img->isFloat        = floatSample;
+    img->colorSpace     = color ? 1 : 0;
+
+    // Allocate channel data
+    img->pixelData = new void*[ numberOfChannels ];
+    img->stats = new double[ numberOfChannels * 2 ];
+
+    size_t elementSize = floatSample ? sizeof(float) :
+                        (bitsPerSample <= 8 ? sizeof(uint8_t) :
+                        (bitsPerSample <= 16 ? sizeof(uint16_t) :
+                                               sizeof(uint32_t)));
+
+    size_t pixels = size_t(width) * size_t(height);
+
+    for (int c = 0; c < numberOfChannels; ++c)
+    {
+        img->pixelData[c] = malloc( pixels * elementSize );
+        memset( img->pixelData[c], 0, pixels * elementSize );
+        img->stats[2*c + 0] = 0.0;   // min
+        img->stats[2*c + 1] = 1.0;   // max
+    }
+
+    // Register in image map
+    image_handle ih = reinterpret_cast<image_handle>( img );
+    {
+        std::lock_guard<std::mutex> lock( g_image_map_mutex );
+        g_image_map[ih] = img;
+    }
+
+    // Attach the image to the MockImageWindow
+    mw->currentImage = ih;
+
+    // Show the window
+    win->show();
+
+    return reinterpret_cast<window_handle>(win);
 }
+
 api_bool API_ImageWindow_LoadImageWindows(const char16_type* url, const char* id, const char* hints, api_bool asACopy, api_bool allowMessages, pcl::window_enumeration_callback, void*)
 {
 
   abort();
 }
+
 api_bool API_ImageWindow_CloseImageWindow(window_handle, api_bool force)
 {
 
   abort();
 }
+
 window_handle API_ImageWindow_GetImageWindowById(const char*)
 {
 
   abort();
 }
+
 window_handle API_ImageWindow_GetImageWindowByFilePath(const char16_type*)
 {
 
   abort();
 }
+
 window_handle API_ImageWindow_GetActiveImageWindow()
 {
     QWidget* w = QApplication::activeWindow();
@@ -14381,20 +15011,23 @@ void API_ImageWindow_FitImageWindow(window_handle)
 
   abort();
 }
+
 void API_ImageWindow_ZoomImageWindowToFit(window_handle, api_bool, api_bool, api_bool, api_bool)
 {
 
-  abort();
+  //  abort();
 }
+
 int32 API_ImageWindow_GetImageWindowZoomFactor(const_window_handle)
 {
 
-  abort();
+  //  abort();
+  return 1;
 }
 void API_ImageWindow_SetImageWindowZoomFactor(window_handle, int32)
 {
 
-  abort();
+  //  abort();
 }
 void API_ImageWindow_UpdateImageWindowViewport(window_handle)
 {
@@ -14441,11 +15074,19 @@ api_bool API_ImageWindow_GetImageWindowVisible(const_window_handle)
 
   abort();
 }
-void API_ImageWindow_SetImageWindowVisible(window_handle, api_bool)
-{
 
-  abort();
+void API_ImageWindow_SetImageWindowVisible( window_handle handle, api_bool visible )
+{
+    QWidget* w = reinterpret_cast<QWidget*>( handle );
+    if ( !w )
+        return;
+
+    if ( visible )
+        w->show();
+    else
+        w->hide();
 }
+
 api_bool API_ImageWindow_GetImageWindowIconic(const_window_handle)
 {
 

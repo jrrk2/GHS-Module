@@ -3,5 +3,11 @@
 *.d
 *.fits
 *.xisf
-macosx/g++/arm64/Release/GHS
+macosx/g++/arm64/Release/
 quality/build
+Gradients*
+*.moc
+*.png
+*.xisf
+*.zip
+.DS_Store
