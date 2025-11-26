@@ -6,6 +6,7 @@
 macosx/g++/arm64/Release/
 quality/build
 Gradients*
+Sandbox*
 *.moc
 *.png
 *.xisf

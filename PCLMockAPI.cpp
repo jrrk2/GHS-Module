@@ -52,6 +52,8 @@
 #include <pcl/Complex.h> // For dcomplex
 #include <cstring> // For memcpy
 #include <pcl/XISF.h>
+#include <pcl/Edit.h>
+
 // #include <pcl/XISFReader.h>
 
 #ifdef __PCL_WINDOWS
@@ -236,6 +238,7 @@ void LogDebug(const std::string& message) {
     } else {
         std::cout << "[PCLMockAPI] " << message << std::endl;
     }
+    
 };
 
 static inline void LogDbg(const std::string& msg) {
@@ -588,6 +591,39 @@ static void EnableEvents(control_handle handle, MockControl* ctrl) {
 static std::map<control_handle, MockControl*> g_control_map;
 static std::mutex g_control_map_mutex;
 
+QWidget* FindInterfaceGuiRoot()
+{
+    QWidget* root = nullptr;
+
+    for (auto& pair : g_control_map)
+    {
+        MockControl* mc = pair.second;
+        QWidget* w = mc->widget;
+        QWidget* parent = w->parentWidget();
+
+        bool parentIsControl = false;
+
+        // Check whether the parent is one of our mock controls.
+        for (auto& other : g_control_map)
+        {
+            if (other.second->widget == parent)
+            {
+                parentIsControl = true;
+                break;
+            }
+        }
+
+        if (!parentIsControl)
+        {
+            // This one is the root
+            root = w;
+            break;
+        }
+    }
+
+    return root;
+}
+  
 api_bool API_Control_SetDestroyEventRoutine(control_handle handle, api_handle receiver,
                                             pcl::control_event_routine handler)
 {
@@ -1032,7 +1068,8 @@ static std::map<std::string, void*> g_function_map;
 static std::mutex g_function_map_mutex;
 static std::map<image_handle, MockImage*> g_image_map;
 static std::mutex g_image_map_mutex;
-  
+static thread_local bool g_constructing_gui = true;
+
 // Create a stub function for missing functions
 // We'll use a simple global function that just returns nullptr
 static void* unimplemented_function(void) {
@@ -2111,7 +2148,7 @@ struct MockSpinBox {
 };
 
 // Global map to track spinboxes
-static std::map<control_handle, MockSpinBox*> g_spinbox_map;
+static std::map<const_control_handle, MockSpinBox*> g_spinbox_map;
 static std::mutex g_spinbox_map_mutex;
 
 // ----------------------------------------------------------------------------
@@ -2153,18 +2190,22 @@ int32 API_SpinBox_GetSpinBoxValue(const_control_handle handle)
     return it->second->spinBox->value();
 }
 
-void API_SpinBox_SetSpinBoxValue(control_handle handle, int32 value)
+void API_SpinBox_SetSpinBoxValue(const_control_handle handle, int32 value)
 {
-    LogDebug("SetSpinBoxValue called, value=" + std::to_string(value));
-    
     std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
     auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end()) {
+    if (it == g_spinbox_map.end())
         return;
-    }
-    
-    it->second->currentValue = value;
-    it->second->spinBox->setValue(value);
+
+    MockSpinBox* mock = it->second;
+    mock->currentValue = value;
+
+    if (g_constructing_gui) return;
+			      
+    // Prevent triggering callbacks during UpdateControls()
+    bool old = mock->spinBox->blockSignals(true);
+    mock->spinBox->setValue(value);
+    mock->spinBox->blockSignals(old);
 }
 
 void API_SpinBox_GetSpinBoxRange(const_control_handle handle, int32* minValue, int32* maxValue)
@@ -2347,30 +2388,36 @@ void API_SpinBox_SetSpinBoxSuffix(control_handle handle, const char16_type* suff
     }
 }
 
-api_bool API_SpinBox_SetSpinBoxValueUpdatedEventRoutine(control_handle handle, api_handle receiver,
-                                                         pcl::spinbox_value_event_routine handler)
+api_bool API_SpinBox_SetSpinBoxValueUpdatedEventRoutine(
+    control_handle handle,
+    api_handle receiver,
+    pcl::spinbox_value_event_routine handler)
 {
     LogDebug("SetSpinBoxValueUpdatedEventRoutine called");
-    
+
     std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
     auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end()) {
+    if (it == g_spinbox_map.end())
         return api_false;
-    }
-    
+
     MockSpinBox* mockSpin = it->second;
-    mockSpin->valueHandler = handler;
+    mockSpin->valueHandler  = handler;
     mockSpin->valueReceiver = receiver;
     
     // Disconnect any existing connections
     QObject::disconnect(mockSpin->spinBox, nullptr, nullptr, nullptr);
-    
+
     // Connect valueChanged signal
-    QObject::connect(mockSpin->spinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-        [mockSpin](int value) {
-            if (mockSpin->valueHandler && mockSpin->valueReceiver) {
-                control_handle spinHandle = reinterpret_cast<control_handle>(mockSpin->spinBox);
-                mockSpin->valueHandler(mockSpin->valueReceiver, spinHandle, value);
+    QObject::connect(
+        mockSpin->spinBox,
+        QOverload<int>::of(&QSpinBox::valueChanged),
+        [mockSpin](int value)
+        {
+            if (mockSpin->valueHandler && mockSpin->valueReceiver)
+            {
+                control_handle spinHandle =
+                    reinterpret_cast<control_handle>(mockSpin->spinBox);
+                mockSpin->valueHandler(reinterpret_cast<api_handle>(g_activeInterface), spinHandle, value);
             }
         });
     
@@ -2480,6 +2527,11 @@ api_bool API_Control_GetControlResourcePixelRatio(const_control_handle handle, d
   */
     *ratio = 1.0;
     return api_true;
+}
+
+static inline int SanitizeSize(int v)
+{
+    return (v < 0) ? 0 : v;   // or 1, but 0 is accepted and means "no min"
 }
 
 control_handle API_Control_CreateControl(api_handle hModule, api_handle client, 
@@ -2611,9 +2663,12 @@ void API_Control_SetControlMinSize(control_handle handle, int32 w, int32 h)
     LogDebug("SetControlMinSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
     if (!handle) return;
-    
+
     QWidget* widget = reinterpret_cast<QWidget*>(handle);
-    widget->setMinimumSize(w, h);
+    int W = SanitizeSize(w);
+    int H = SanitizeSize(h);
+    
+    widget->setMinimumSize(W, H);
 }
 
 void API_Control_GetControlMaxSize(const_control_handle handle, int32* w, int32* h)
@@ -2646,9 +2701,12 @@ void API_Control_SetControlFixedSize(control_handle handle, int32 w, int32 h)
     LogDebug("SetControlFixedSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
     if (!handle) return;
+    int W = SanitizeSize(w);
+    int H = SanitizeSize(h);
     
     QWidget* widget = reinterpret_cast<QWidget*>(handle);
-    widget->setFixedSize(w, h);
+    
+    widget->setFixedSize(W, H);
 }
 
 void API_Control_SetControlScaledMinSize(control_handle handle, int32 w, int32 h)
@@ -2660,7 +2718,10 @@ void API_Control_SetControlScaledMinSize(control_handle handle, int32 w, int32 h
     QWidget* widget = reinterpret_cast<QWidget*>(handle);
     // In a real implementation, you'd scale by DPI
     // For now, just set minimum size directly
-    widget->setMinimumSize(w, h);
+    int W = SanitizeSize(w);
+    int H = SanitizeSize(h);
+    
+    widget->setMinimumSize(W, H);
 }
 
 void API_Control_SetControlScaledMaxSize(control_handle handle, int32 w, int32 h)
@@ -4209,12 +4270,14 @@ control_handle API_Button_CreateRadioButton(api_handle hModule, api_handle clien
 // ----------------------------------------------------------------------------
 struct MockEdit {
     QLineEdit* edit;
-    api_handle clientHandle;
 
-    // Edit events
+    // PCL objects:
+    void* pclEdit;               // pcl::Edit* (used as hSender)
+    void* editCompletedReceiver; // pcl::Control* (NumericControl etc.)
+
     pcl::event_routine editCompletedHandler;
-    void* editCompletedReceiver;
 
+    // Other handlers, as you already have:
     pcl::event_routine returnPressedHandler;
     void* returnPressedReceiver;
 
@@ -4226,62 +4289,69 @@ struct MockEdit {
 
     pcl::range_event_routine selectionUpdatedHandler;
     void* selectionUpdatedReceiver;
-  
-    // Validation
+
     QRegularExpressionValidator* validator;
 
-    MockEdit(const char16_type* text = nullptr) 
+    MockEdit(const char16_type* text = nullptr)
         : edit(new QLineEdit())
-	, clientHandle(nullptr)
-	, editCompletedHandler(nullptr)
-	, editCompletedReceiver(nullptr)
-	, returnPressedHandler(nullptr)
-	, returnPressedReceiver(nullptr)
-	, textUpdatedHandler(nullptr)
-	, textUpdatedReceiver(nullptr)
-	, caretPositionUpdatedHandler(nullptr)
-	, caretPositionUpdatedReceiver(nullptr)
-	, selectionUpdatedHandler(nullptr)
-	, selectionUpdatedReceiver(nullptr)
-	, validator(nullptr)
+        , pclEdit(nullptr)
+        , editCompletedReceiver(nullptr)
+        , editCompletedHandler(nullptr)
+        , returnPressedHandler(nullptr)
+        , returnPressedReceiver(nullptr)
+        , textUpdatedHandler(nullptr)
+        , textUpdatedReceiver(nullptr)
+        , caretPositionUpdatedHandler(nullptr)
+        , caretPositionUpdatedReceiver(nullptr)
+        , selectionUpdatedHandler(nullptr)
+        , selectionUpdatedReceiver(nullptr)
+        , validator(nullptr)
     {
-        if (text && *text) {
-            edit->setText(QString::fromUtf16(reinterpret_cast<const ushort*>(text)));
-        }
+        if (text && *text)
+            edit->setText(QString::fromUtf16(
+                reinterpret_cast<const ushort*>(text)));
     }
-    
-    ~MockEdit() {
-        // Qt parent ownership handles deletion
-      delete validator;
+
+    ~MockEdit()
+    {
+        delete validator;
     }
 };
-
+  
 // Global map to track edits
 static std::map<control_handle, MockEdit*> g_edit_map;
 static std::mutex g_edit_map_mutex;
 
-control_handle API_Edit_CreateEdit(api_handle, api_handle client, const char16_type* text, 
-                                   control_handle parent, uint32 flags)
+control_handle API_Edit_CreateEdit(api_handle /*module*/,
+                                   api_handle client,
+                                   const char16_type* text,
+                                   control_handle parent,
+                                   uint32 /*flags*/)
 {
     LogDbg("CreateEdit called");
-    
-    MockEdit* edit = new MockEdit(text);
-    edit->clientHandle = client;
-    
-    // Set parent if provided
+
+    MockEdit* mock = new MockEdit(text);
+
+    // 1) store the PCL Edit* (sender for EditCompleted)
+    mock->pclEdit = client; // this is exactly 'this' from pcl::Edit ctor
+
+    // 2) parent the Qt widget if needed
     if (parent) {
         QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
-        edit->edit->setParent(parentWidget);
+        mock->edit->setParent(parentWidget);
     }
-    
-    control_handle handle = reinterpret_cast<control_handle>(edit->edit);
-    
-    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
-    g_edit_map[handle] = edit;
-    
+
+    // 3) This is the handle PCL will use for this edit control
+    control_handle handle = reinterpret_cast<control_handle>(mock->edit);
+
+    {
+        std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+        g_edit_map[handle] = mock;
+    }
+
     return handle;
 }
-
+  
 api_bool API_Edit_GetEditText(const_control_handle handle, char16_type* text, size_type* len)
 {
     LogDbg("GetEditText called");
@@ -11048,6 +11118,7 @@ void API_Edit_GetEditSelection(const_control_handle handle, int32* start, int32*
     if (start) *start = s;
     if (end)   *end   = s + len;
 } 
+
 void API_Edit_SetEditSelection(control_handle handle, int32 start, int32 end)
 {
     LogDbg("API_Edit_SetEditSelection called");
@@ -11074,6 +11145,7 @@ void API_Edit_SetEditSelection(control_handle handle, int32 start, int32 end)
 
     w->setSelection(start, selLen);
 }
+  
 api_bool API_Edit_GetEditSelectedText(const_control_handle handle,
                                       char16_type* text,
                                       size_type* len)
@@ -11107,43 +11179,55 @@ api_bool API_Edit_GetEditSelectedText(const_control_handle handle,
 
     return api_true;
 }
-   api_bool API_Edit_SetEditCompletedEventRoutine(
-	   control_handle handle,
-	   api_handle receiver,
-	   pcl::event_routine routine )
-   {
-       LogDbg("API_Edit_SetEditCompletedEventRoutine called");
 
-       std::lock_guard<std::mutex> lock(g_edit_map_mutex);
-       auto it = g_edit_map.find(handle);
-       if (it == g_edit_map.end()) {
-	   // We don't know this edit control
-	   return api_false;
-       }
+api_bool API_Edit_SetEditCompletedEventRoutine(
+    control_handle handle,
+    api_handle receiver,
+    pcl::event_routine handler)
+{
+    LogDebug("API_Edit_SetEditCompletedEventRoutine called");
 
-       MockEdit* mockEdit = it->second;
-       mockEdit->editCompletedHandler  = routine;
-       mockEdit->editCompletedReceiver = receiver;
+    std::lock_guard<std::mutex> lock(g_edit_map_mutex);
+    auto it = g_edit_map.find(handle);
+    if (it == g_edit_map.end())
+        return api_false;
 
-       QLineEdit* lineEdit = mockEdit->edit;
-       if (lineEdit) {
-	   // Clear previous mock connections (same pattern as button click routine)
-	   QObject::disconnect(lineEdit, nullptr, nullptr, nullptr);
+    MockEdit* mockEdit = it->second;
 
-	   if (routine) {
-	       // Bridge QLineEdit::editingFinished() to PCL editCompleted event
-	       QObject::connect(lineEdit, &QLineEdit::editingFinished,
-				[mockEdit, lineEdit]() {
-		   if (mockEdit->editCompletedHandler && mockEdit->editCompletedReceiver) {
-		       control_handle h = reinterpret_cast<control_handle>(lineEdit);
-		       mockEdit->editCompletedHandler(mockEdit->editCompletedReceiver, h);
-		   }
-	       });
-	   }
-       }
+    // Store exactly what PCL told us:
+    mockEdit->editCompletedReceiver = receiver; // pcl::Control* (NumericControl)
+    mockEdit->editCompletedHandler  = handler;  // EditEventDispatcher::EditCompleted
 
-       return api_true;
-   }
+    QObject::disconnect(mockEdit->edit, nullptr, nullptr, nullptr);
+
+    QObject::connect(
+        mockEdit->edit,
+        &QLineEdit::editingFinished,
+        [mockEdit]()
+        {
+            if (!mockEdit->editCompletedHandler) {
+                LogDebug("editingFinished: no handler");
+                return;
+            }
+            if (!mockEdit->pclEdit) {
+                LogDebug("editingFinished: no pclEdit");
+                return;
+            }
+            if (!mockEdit->editCompletedReceiver) {
+                LogDebug("editingFinished: no receiver");
+                return;
+            }
+
+            control_handle hSender =
+                reinterpret_cast<control_handle>(mockEdit->pclEdit);              // pcl::Edit*
+            control_handle hReceiver =
+                reinterpret_cast<control_handle>(mockEdit->editCompletedReceiver); // pcl::Control*
+
+            mockEdit->editCompletedHandler(hSender, hReceiver);
+        });
+
+    return api_true;
+}
 
 api_bool API_Edit_SetReturnPressedEventRoutine(
         control_handle handle,
@@ -11167,7 +11251,7 @@ api_bool API_Edit_SetReturnPressedEventRoutine(
             [edit, w]() {
                 if (edit->returnPressedHandler && edit->returnPressedReceiver) {
                     control_handle h = reinterpret_cast<control_handle>(w);
-                    edit->returnPressedHandler(edit->returnPressedReceiver, h);
+                    edit->returnPressedHandler(reinterpret_cast<api_handle>(g_activeInterface), h);
                 }
             });
 
@@ -11197,7 +11281,7 @@ api_bool API_Edit_SetTextUpdatedEventRoutine(
                 if (edit->textUpdatedHandler && edit->textUpdatedReceiver) {
                     control_handle h = reinterpret_cast<control_handle>(w);
                     std::u16string u16 = qs.toStdU16String();
-                    edit->textUpdatedHandler(edit->textUpdatedReceiver,
+                    edit->textUpdatedHandler(reinterpret_cast<api_handle>(g_activeInterface),
                                              h,
                                              reinterpret_cast<const char16_type*>(u16.c_str()));
                 }
@@ -11228,7 +11312,7 @@ api_bool API_Edit_SetCaretPositionUpdatedEventRoutine(
             [edit, w](int oldPos, int newPos) {
                 if (edit->caretPositionUpdatedHandler && edit->caretPositionUpdatedReceiver) {
                     control_handle h = reinterpret_cast<control_handle>(w);
-                    edit->caretPositionUpdatedHandler(edit->caretPositionUpdatedReceiver,
+                    edit->caretPositionUpdatedHandler(reinterpret_cast<api_handle>(g_activeInterface),
                                                       h,
                                                       oldPos,
                                                       newPos);
@@ -11262,7 +11346,7 @@ api_bool API_Edit_SetSelectionUpdatedEventRoutine(
                     control_handle h = reinterpret_cast<control_handle>(w);
                     int start = w->selectionStart();
                     int len   = w->selectedText().length();
-                    edit->selectionUpdatedHandler(edit->selectionUpdatedReceiver,
+                    edit->selectionUpdatedHandler(reinterpret_cast<api_handle>(g_activeInterface),
                                                   h,
                                                   start,
                                                   start + len);

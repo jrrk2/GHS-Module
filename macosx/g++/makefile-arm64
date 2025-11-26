@@ -9,7 +9,7 @@
 # Configuration ... Release/arm64
 ######################################################################
 
-MAIN=test_interface
+MAIN=SandboxInterfaceTests
 OBJ_DIR="arm64/Release"
 
 .PHONY: all
@@ -39,7 +39,11 @@ SRC_FILES= \
 ../../PCLMockAPI.cpp \
 ../../PCLThreadMock.cpp \
 ../../RgbPreserve.cpp \
-
+../../SandboxInstance.cpp \
+../../SandboxInterface.cpp \
+../../SandboxModule.cpp \
+../../SandboxParameters.cpp \
+../../SandboxProcess.cpp \
 
 #
 # Object files
@@ -62,6 +66,11 @@ OBJ_FILES= \
 ./arm64/Release/PCLMockAPI.o \
 ./arm64/Release/PCLThreadMock.o \
 ./arm64/Release/RgbPreserve.o \
+./arm64/Release//SandboxInstance.o \
+./arm64/Release//SandboxInterface.o \
+./arm64/Release//SandboxModule.o \
+./arm64/Release//SandboxParameters.o \
+./arm64/Release//SandboxProcess.o \
 
 #
 # Dependency files
@@ -84,6 +93,11 @@ DEP_FILES= \
 ./arm64/Release/PCLMockAPI.d \
 ./arm64/Release/PCLThreadMock.d \
 ./arm64/Release/RgbPreserve.d \
+./arm64/Release//SandboxInstance.d \
+./arm64/Release//SandboxInterface.d \
+./arm64/Release//SandboxModule.d \
+./arm64/Release//SandboxParameters.d \
+./arm64/Release//SandboxProcess.d \
 
 #
 # Rules

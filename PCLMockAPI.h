@@ -12,6 +12,8 @@
 #include <functional>
 #include <string>
 #include <pcl/api/APIDefs.h>
+#include <pcl/ProcessInterface.h>
+#include <QWidget>
 
 // Common PCL API types
 //typedef int api_bool;
@@ -114,9 +116,11 @@ void SetLogFile(const std::string& filename);
 extern "C" {
   void SetDebugLogging(bool);
   void SetModuleHandle(void *);
+  QWidget* FindInterfaceGuiRoot();
+  
 };
 
-// In PCLMockAPI.h or the appropriate header
+extern pcl::ProcessInterface* g_activeInterface;
 
 // SpinBox event handler typedef
 namespace pcl {
