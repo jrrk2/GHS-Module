@@ -54,6 +54,7 @@
 #include <cstring> // For memcpy
 #include <pcl/XISF.h>
 #include <pcl/Edit.h>
+#include <pcl/TreeBox.h>
 
 // #include <pcl/XISFReader.h>
 
@@ -82,6 +83,13 @@ static pcl::Mutex s_cfitsio_mutex;
 #include <QPaintEvent>
 #include <QResizeEvent>
 #include <QMoveEvent>
+// ----------------------------------------------------------------------------
+// TreeBox mock support
+// ----------------------------------------------------------------------------
+
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QHeaderView>
 
 // ----------------------------------------------------------------------------
 // Event Handler Storage (updated MockControl structure)
@@ -190,6 +198,110 @@ struct MockControl {
         // Qt handles widget cleanup
     }
 };
+
+struct MockTreeNode
+{
+    std::vector<String>          text;
+    std::vector<control_handle>  icon;
+    std::vector<String>          tooltip;
+
+    bool selected = false;
+
+    explicit MockTreeNode( int columns )
+    {
+        text.resize( columns );
+        icon.resize( columns, nullptr );
+        tooltip.resize( columns );
+    }
+};
+
+struct MockTreeBox : MockControl
+{
+    int columns = 1;
+    std::vector<MockTreeNode*> nodes;
+
+    control_handle viewport = nullptr;
+    QTreeWidget* tree = nullptr;
+
+    // Behavior flags we care about
+    bool multipleSelection = false;
+    bool uniformRowHeight = false;
+
+    bool multipleSelections = false;
+    bool rootDecoration     = false;
+    bool alternateRowColor  = false;
+
+    MockTreeBox() = default;
+
+    ~MockTreeBox()
+    {
+        for ( MockTreeNode* n : nodes )
+            delete n;
+    }
+};
+
+static std::map<control_handle, MockTreeBox*> g_treebox_map;
+static std::map<pcl::TreeBox::Node*, QTreeWidgetItem*> g_node_to_item;
+static std::map<QTreeWidgetItem*, pcl::TreeBox::Node*> g_item_to_node;
+static std::mutex g_treebox_mutex;
+
+// Helpers
+static MockTreeBox* GetMockTreeBox(const_control_handle hTree)
+{
+    if (!hTree)
+        return nullptr;
+
+    auto it = g_treebox_map.find(const_cast<control_handle>(hTree));
+    if (it == g_treebox_map.end())
+        return nullptr;
+    return it->second;
+}
+
+static QTreeWidgetItem* ItemFromNodeHandle(const_api_handle hNode)
+{
+    if (!hNode)
+        return nullptr;
+
+    auto* node = reinterpret_cast<pcl::TreeBox::Node*>(
+        const_cast<api_handle>(hNode));
+
+    auto it = g_node_to_item.find(node);
+    if (it == g_node_to_item.end())
+        return nullptr;
+
+    return it->second;
+}
+
+static pcl::TreeBox::Node* NodeFromItem(QTreeWidgetItem* item)
+{
+    if (!item)
+        return nullptr;
+
+    auto it = g_item_to_node.find(item);
+    if (it == g_item_to_node.end())
+        return nullptr;
+
+    return it->second;
+}
+
+// Remove a subtree from the node maps.
+static void RemoveItemSubtreeFromMaps(QTreeWidgetItem* item)
+{
+    if (!item)
+        return;
+
+    auto it = g_item_to_node.find(item);
+    if (it != g_item_to_node.end())
+    {
+        pcl::TreeBox::Node* node = it->second;
+        g_item_to_node.erase(it);
+        g_node_to_item.erase(node);
+    }
+
+    const int childCount = item->childCount();
+    for (int i = 0; i < childCount; ++i)
+        RemoveItemSubtreeFromMaps(item->child(i));
+}
 
 // Logging settings
 static bool g_debug_logging = false;
@@ -1063,6 +1175,8 @@ static std::mutex g_file_instances_mutex;
 
 // Global module handle
 static void* g_module_handle = nullptr;
+// At top of PCLMockAPI.cpp
+static control_handle g_lastTopLevelControl = nullptr;
 
 // Function mapping
 static std::map<std::string, void*> g_function_map;
@@ -2497,21 +2611,48 @@ void API_SpinBox_SetSpinBoxReadOnly(control_handle handle, api_bool readOnly)
 // ControlContext API
 // ----------------------------------------------------------------------------
 
+// Small helper – avoids dynamic_cast on non-polymorphic MockControl.
+/*
+static MockControl *GetControlBox( const_control_handle h )
+{
+    if (!h) return nullptr;
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find( h );
+    if ( it == g_control_map.end() )
+        return nullptr;
+    return static_cast<MockControl *>( it->second );
+}
+*/
+
+MockControl* GetControlBox(const_control_handle h)
+{
+    if (!h)
+        return nullptr;
+
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(h);
+    if (it == g_control_map.end())
+        return nullptr;
+
+    return it->second;
+}
+
 api_bool API_Control_GetControlResourcePixelRatio(const_control_handle handle, double* ratio)
 {
-  /*
     LogDebug("GetControlResourcePixelRatio called");
-    
-    if (!ratio) {
-        return api_false;
-    }
     
     if (!handle) {
         *ratio = 1.0;
         return api_false;
     }
+
+    MockControl* wdg = GetControlBox(handle);
     
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    if (!ratio || !wdg) {
+        return api_false;
+    }
+    
+    QWidget* widget = wdg->widget;
     
     // Get the device pixel ratio from the widget's screen
     QScreen* screen = widget->screen();
@@ -2526,7 +2667,7 @@ api_bool API_Control_GetControlResourcePixelRatio(const_control_handle handle, d
             *ratio = 1.0;
         }
     }
-  */
+
     *ratio = 1.0;
     return api_true;
 }
@@ -2536,24 +2677,41 @@ static inline int SanitizeSize(int v)
     return (v < 0) ? 0 : v;   // or 1, but 0 is accepted and means "no min"
 }
 
-control_handle API_Control_CreateControl(api_handle hModule, api_handle client, 
-                                         control_handle parent, uint32 flags)
+control_handle API_Control_CreateControl(api_handle hModule,
+                                         api_handle client,
+                                         control_handle parent,
+                                         uint32 flags)
 {
     LogDebug("CreateControl called");
-    
+
+    // Allocate a new MockControl object
     MockControl* ctrl = new MockControl();
     ctrl->clientHandle = client;
-    
-    // Set parent if provided
+    ctrl->flags = flags;
+
+    // Parent relationship
     if (parent) {
-        QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
-        ctrl->widget->setParent(parentWidget);
+        MockControl* parentCtrl = reinterpret_cast<MockControl*>(parent);
+        ctrl->widget->setParent(parentCtrl->widget);   // <- QWidget parent
+        ctrl->parent = nullptr;                        // <- TreeBox only
+    } else {
+        //
+        // Important: This becomes a top-level window.
+        //
+        ctrl->widget->setWindowFlags(Qt::Window);
     }
-    
-    control_handle handle = reinterpret_cast<control_handle>(ctrl->widget);
-    
-    std::lock_guard<std::mutex> lock(g_control_map_mutex);
-    g_control_map[handle] = ctrl;
+
+    // Create stable handle
+    control_handle handle = reinterpret_cast<control_handle>(ctrl);
+
+    {
+        std::lock_guard<std::mutex> lock(g_control_map_mutex);
+        g_control_map[handle] = ctrl;
+    }
+
+    // Remember the last created top-level control
+    if (!parent)
+        g_lastTopLevelControl = handle;
     
     return handle;
 }
@@ -2575,9 +2733,13 @@ control_handle API_Control_GetControlParent(const_control_handle handle)
 {
     LogDebug("GetControlParent called");
     
-    if (!handle) return nullptr;
+    MockControl* wdg = GetControlBox(handle);
     
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    if (!wdg) {
+        return api_false;
+    }
+    
+    QWidget* widget = wdg->widget;
     QWidget* parent = widget->parentWidget();
     
     return reinterpret_cast<control_handle>(parent);
@@ -2587,9 +2749,9 @@ void API_Control_SetControlParent(control_handle handle, control_handle parent)
 {
     LogDebug("SetControlParent called");
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     QWidget* parentWidget = parent ? reinterpret_cast<QWidget*>(parent) : nullptr;
     
     widget->setParent(parentWidget);
@@ -2603,7 +2765,9 @@ void API_Control_GetControlPosition(const_control_handle handle, int32* x, int32
         return;
     }
     
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     QPoint pos = widget->pos();
     
     if (x) *x = pos.x();
@@ -2614,9 +2778,9 @@ void API_Control_SetControlPosition(control_handle handle, int32 x, int32 y)
 {
     LogDebug("SetControlPosition called, x=" + std::to_string(x) + ", y=" + std::to_string(y));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->move(x, y);
 }
 
@@ -2628,7 +2792,9 @@ void API_Control_GetControlSize(const_control_handle handle, int32* w, int32* h)
         return;
     }
     
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     QSize size = widget->size();
     
     if (w) *w = size.width();
@@ -2639,9 +2805,9 @@ void API_Control_SetControlSize(control_handle handle, int32 w, int32 h)
 {
     LogDebug("SetControlSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->resize(w, h);
 }
 
@@ -2653,7 +2819,9 @@ void API_Control_GetControlMinSize(const_control_handle handle, int32* w, int32*
         return;
     }
     
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     QSize size = widget->minimumSize();
     
     if (w) *w = size.width();
@@ -2664,10 +2832,9 @@ void API_Control_SetControlMinSize(control_handle handle, int32 w, int32 h)
 {
     LogDebug("SetControlMinSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
-    if (!handle) return;
-
-    MockControl* ctrl = GetOrCreateMockControl(handle);
-    QWidget* widget = ctrl->widget;
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     int W = SanitizeSize(w);
     int H = SanitizeSize(h);
     
@@ -2682,7 +2849,9 @@ void API_Control_GetControlMaxSize(const_control_handle handle, int32* w, int32*
         return;
     }
     
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     QSize size = widget->maximumSize();
     
     if (w) *w = size.width();
@@ -2693,9 +2862,9 @@ void API_Control_SetControlMaxSize(control_handle handle, int32 w, int32 h)
 {
     LogDebug("SetControlMaxSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setMaximumSize(w, h);
 }
 
@@ -2703,11 +2872,12 @@ void API_Control_SetControlFixedSize(control_handle handle, int32 w, int32 h)
 {
     LogDebug("SetControlFixedSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
-    if (!handle) return;
     int W = SanitizeSize(w);
     int H = SanitizeSize(h);
     
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     
     widget->setFixedSize(W, H);
 }
@@ -2716,9 +2886,9 @@ void API_Control_SetControlScaledMinSize(control_handle handle, int32 w, int32 h
 {
     LogDebug("SetControlScaledMinSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     // In a real implementation, you'd scale by DPI
     // For now, just set minimum size directly
     int W = SanitizeSize(w);
@@ -2731,9 +2901,9 @@ void API_Control_SetControlScaledMaxSize(control_handle handle, int32 w, int32 h
 {
     LogDebug("SetControlScaledMaxSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setMaximumSize(w, h);
 }
 
@@ -2741,9 +2911,9 @@ void API_Control_SetControlScaledFixedSize(control_handle handle, int32 w, int32
 {
     LogDebug("SetControlScaledFixedSize called, w=" + std::to_string(w) + ", h=" + std::to_string(h));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setFixedSize(w, h);
 }
 
@@ -2751,9 +2921,9 @@ void API_Control_SetControlScaledMinWidth(control_handle handle, int32 w)
 {
     LogDebug("SetControlScaledMinWidth called, w=" + std::to_string(w));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setMinimumWidth(w);
 }
 
@@ -2761,17 +2931,17 @@ void API_Control_SetControlScaledMinHeight(control_handle handle, int32 h)
 {
     LogDebug("SetControlScaledMinHeight called, h=" + std::to_string(h));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setMinimumHeight(h);
 }
 
 api_bool API_Control_GetControlVisible(const_control_handle handle)
 {
-    if (!handle) return api_false;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return api_false;
+    QWidget* widget = wdg->widget;
     return widget->isVisible() ? api_true : api_false;
 }
 
@@ -2779,33 +2949,34 @@ void API_Control_SetControlVisible(control_handle handle, api_bool visibleFlags)
 {
     LogDebug("SetControlVisible called, flags=" + std::to_string(visibleFlags));
 
-    if (!handle)
-        return;
-
-    QWidget* w = reinterpret_cast<QWidget*>(handle);
-
-    // Bit 0 means "should be visible"
-    bool shouldBeVisible = (visibleFlags & 0x0001) != 0;
-
-    // PixInsight uses extra bits for deferred show (0x0100)
-    bool deferredShow = (visibleFlags & 0x0100) != 0;
-
-    if (deferredShow) {
-        // store state but do nothing yet
-      //        mockVisibilityState[handle] = visibleFlags;
-        return;
+    // If the PixInsight side uses a null handle for the interface "frame",
+    // substitute our last known top-level control.
+    if (!handle && g_lastTopLevelControl) {
+        LogDebug("SetControlVisible: null handle, using last top-level control");
+        handle = g_lastTopLevelControl;
     }
 
-    w->setVisible(shouldBeVisible);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg)
+        return;
+
+    QWidget* widget = wdg->widget;
+    if (!widget)
+        return;
+
+    if (visibleFlags)
+        widget->show();
+    else
+        widget->hide();
 }
 
 void API_Control_ShowControl(control_handle handle)
 {
     LogDebug("ShowControl called");
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->show();
 }
 
@@ -2813,17 +2984,18 @@ void API_Control_HideControl(control_handle handle)
 {
     LogDebug("HideControl called");
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->hide();
 }
 
 api_bool API_Control_GetControlEnabled(const_control_handle handle)
 {
     if (!handle) return api_false;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return api_false;
+    QWidget* widget = wdg->widget;
     return widget->isEnabled() ? api_true : api_false;
 }
 
@@ -2831,9 +3003,9 @@ void API_Control_SetControlEnabled(control_handle handle, api_bool enabled)
 {
     LogDebug("SetControlEnabled called, enabled=" + std::to_string(enabled));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setEnabled(enabled != 0);
 }
 
@@ -2841,9 +3013,9 @@ void API_Control_EnableControl(control_handle handle)
 {
     LogDebug("EnableControl called");
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setEnabled(true);
 }
 
@@ -2851,9 +3023,9 @@ void API_Control_DisableControl(control_handle handle)
 {
     LogDebug("DisableControl called");
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setEnabled(false);
 }
 
@@ -2864,7 +3036,9 @@ void API_Control_SetControlToolTip(control_handle handle, const char16_type* too
     std::string tipStr = Utf16ToUtf8(tooltip);
     LogDebug("SetControlToolTip called");
     
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setToolTip(QString::fromUtf16(reinterpret_cast<const ushort*>(tooltip)));
 }
 
@@ -2872,9 +3046,9 @@ void API_Control_SetControlFocusStyle(control_handle handle, int32 style)
 {
     LogDebug("SetControlFocusStyle called, style=" + std::to_string(style));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     
     // Map PCL focus styles to Qt
     // 0 = NoFocus, 1 = TabFocus, 2 = ClickFocus, 3 = StrongFocus
@@ -2909,7 +3083,9 @@ void API_Control_SetControlSizer(control_handle handle, sizer_handle sizer)
         return;
     }
     
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setLayout(sizerIt->second->layout);
     
     // Store sizer reference in control
@@ -2921,9 +3097,9 @@ void API_Control_UpdateControl(control_handle handle)
 {
     LogDebug("UpdateControl called");
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->update();
 }
 
@@ -2931,9 +3107,9 @@ void API_Control_RepaintControl(control_handle handle)
 {
     LogDebug("RepaintControl called");
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->repaint();
 }
 
@@ -2941,9 +3117,9 @@ void API_Control_EnableMouseTracking(control_handle handle)
 {
     LogDebug("EnableMouseTracking called");
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setMouseTracking(true);
 }
 
@@ -2951,9 +3127,9 @@ void API_Control_DisableMouseTracking(control_handle handle)
 {
     LogDebug("DisableMouseTracking called");
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     widget->setMouseTracking(false);
 }
 
@@ -2961,7 +3137,9 @@ api_bool API_Control_GetControlCursor(const_control_handle handle, int32* cursor
 {
     if (!handle || !cursorShape) return api_false;
     
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return api_false;
+    QWidget* widget = wdg->widget;
     
     // Map Qt cursor to PCL cursor shape
     Qt::CursorShape shape = widget->cursor().shape();
@@ -2974,9 +3152,9 @@ void API_Control_SetControlCursor(control_handle handle, int32 cursorShape)
 {
     LogDebug("SetControlCursor called, cursorShape=" + std::to_string(cursorShape));
     
-    if (!handle) return;
-    
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) return;
+    QWidget* widget = wdg->widget;
     
     // Map PCL cursor shape to Qt (assuming similar values)
     Qt::CursorShape qtShape = static_cast<Qt::CursorShape>(cursorShape);
@@ -3323,8 +3501,9 @@ api_bool API_UI_SetUIObjectId(api_handle handle, const char16_type* id)
         g_object_id_map[handle] = idStr;
         
         // Also set Qt object name if it's a QWidget
-        QWidget* widget = reinterpret_cast<QWidget*>(handle);
-        if (widget) {
+        MockControl* wdg = GetControlBox(handle);
+        if (wdg) {
+	    QWidget* widget = wdg->widget;
             QString qid = QString::fromUtf16(reinterpret_cast<const ushort*>(id));
             widget->setObjectName(qid);
         }
@@ -3334,8 +3513,9 @@ api_bool API_UI_SetUIObjectId(api_handle handle, const char16_type* id)
         // Clear the ID
         g_object_id_map.erase(handle);
         
-        QWidget* widget = reinterpret_cast<QWidget*>(handle);
-        if (widget) {
+        MockControl* wdg = GetControlBox(handle);
+        if (wdg) {
+	    QWidget* widget = wdg->widget;
             widget->setObjectName(QString());
         }
         
@@ -4783,8 +4963,6 @@ struct MockImageWindow {
 static std::map<window_handle, MockImageWindow*> g_image_window_map;
 static std::mutex g_image_window_map_mutex;
 
-static window_handle g_active_image_window = nullptr;
-
 struct MockView {
     MockImage* image;
     QString identifier;
@@ -4799,81 +4977,14 @@ static std::mutex g_view_map_mutex;
 // TreeBox Mock API
 // -----------------------------------------------------------------------------
 
-struct MockTreeNode
-{
-    std::vector<String>          text;
-    std::vector<control_handle>  icon;
-    std::vector<String>          tooltip;
-
-    bool selected = false;
-
-    explicit MockTreeNode( int columns )
-    {
-        text.resize( columns );
-        icon.resize( columns, nullptr );
-        tooltip.resize( columns );
-    }
-};
-
-struct MockTreeBox : MockControl
-{
-    int columns = 1;
-    std::vector<MockTreeNode*> nodes;
-
-    control_handle viewport = nullptr;
-
-    bool multipleSelections = false;
-    bool rootDecoration     = false;
-    bool alternateRowColor  = false;
-
-    MockTreeBox() = default;
-
-    ~MockTreeBox()
-    {
-        for ( MockTreeNode* n : nodes )
-            delete n;
-    }
-};
-
 // Small helper – avoids dynamic_cast on non-polymorphic MockControl.
 static MockTreeBox* GetTreeBox( control_handle h )
 {
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
     auto it = g_control_map.find( h );
     if ( it == g_control_map.end() )
         return nullptr;
     return static_cast<MockTreeBox*>( it->second );
-}
-
-// -----------------------------------------------------------------------------
-// Create TreeBox
-// -----------------------------------------------------------------------------
-
-control_handle API_TreeBox_CreateTreeBox( api_handle, api_handle,
-                                          control_handle parentHandle, uint32 flags )
-{
-    std::lock_guard<std::mutex> lock( g_control_map_mutex );
-
-    MockTreeBox* tb = new MockTreeBox();
-    tb->flags = flags;
-    // NOTE: We deliberately do not assign tb->parent here, since the type of
-    //       MockControl::parent in your existing code caused a mismatch.
-    //       If you need it later, copy whatever pattern you use in
-    //       API_Control_CreateControl, e.g.:
-    //       tb->parent = parentHandle ? g_control_map[parentHandle] : nullptr;
-
-    control_handle hTB = reinterpret_cast<control_handle>( tb );
-    g_control_map[hTB] = tb;
-
-    // Create a simple viewport child control.
-    MockControl* vp = new MockControl();
-    // If your MockControl has a parent/owner field, you can assign it here
-    // using the same type as in your struct. We avoid it to keep this generic.
-    control_handle hVP = reinterpret_cast<control_handle>( vp );
-    g_control_map[hVP] = vp;
-
-    tb->viewport = hVP;
-
-    return hTB;
 }
 
 // -----------------------------------------------------------------------------
@@ -5261,28 +5372,6 @@ api_bool API_TreeBox_SetMaxHeight( control_handle, int32 )
 // Viewport
 // -----------------------------------------------------------------------------
 
-// -----------------------------------------------------------------------------
-// Create TreeBox Viewport
-// -----------------------------------------------------------------------------
-
-control_handle API_TreeBox_CreateTreeBoxViewport( control_handle parentHandle,
-                                                  api_handle /*client*/ )
-{
-    std::lock_guard<std::mutex> lock( g_control_map_mutex );
-
-    // Viewport is just another MockControl in the mock framework
-    MockControl* vp = new MockControl();
-    control_handle hVP = reinterpret_cast<control_handle>( vp );
-    g_control_map[hVP] = vp;
-
-    // Attach viewport to its TreeBox
-    MockTreeBox* tb = GetTreeBox( parentHandle );
-    if ( tb )
-        tb->viewport = hVP;
-
-    return hVP;
-}
-
 control_handle API_TreeBox_GetViewportHandle( control_handle h )
 {
     MockTreeBox* tb = GetTreeBox( h );
@@ -5362,6 +5451,72 @@ static MockPixelTraitsLUT g_pixel_luts[16] = {
     { 4, 8, 64, 0.0, 1.0 },
     // Add more formats as needed...
 };
+
+// ----------------------------------------------------------------------------
+// Global Settings mock
+// ----------------------------------------------------------------------------
+
+static std::mutex g_settings_mutex;
+
+// settings[module][key] = int
+static std::map<api_handle, std::map<std::string, int32>> g_settings_local;
+static std::map<std::string, int32> g_settings_global;
+
+static void preload_default_global_settings()
+{
+    std::lock_guard<std::mutex> lock(g_settings_mutex);
+
+    if (!g_settings_global.count("Workspace/PrimaryScreenCenterX"))
+        g_settings_global["Workspace/PrimaryScreenCenterX"] = 400;
+
+    if (!g_settings_global.count("Workspace/PrimaryScreenCenterY"))
+        g_settings_global["Workspace/PrimaryScreenCenterY"] = 300;
+}
+
+api_bool API_Global_ReadSettingsInteger( api_handle module,
+                                         int32*     outValue,
+                                         const char* key,
+                                         api_bool   global )
+{
+    LogDbg("API_Global_ReadSettingsInteger called");
+    preload_default_global_settings();
+ 
+    if (!outValue || !key)
+        return api_false;
+
+    std::string skey(key);
+
+    std::lock_guard<std::mutex> lock(g_settings_mutex);
+
+    if (global)
+    {
+        auto it = g_settings_global.find(skey);
+        if (it == g_settings_global.end())
+	  {
+	    LogDbg("API_Global_ReadSettingsInteger missing: " + skey);
+            return api_false;
+	  }
+        *outValue = it->second;
+        return api_true;
+    }
+    else
+    {
+        auto modIt = g_settings_local.find(module);
+        if (modIt == g_settings_local.end())
+	  {
+	    LogDbg("API_Local_ReadSettingsInteger missing: " + skey);
+            return api_false;
+	  }
+	
+        auto& m = modIt->second;
+        auto it = m.find(skey);
+        if (it == m.end())
+            return api_false;
+
+        *outValue = it->second;
+        return api_true;
+    }
+}
 
 // Get the PixInsight version
 void API_Global_GetPixInsightVersion(uint32_t* major, uint32_t* minor, uint32_t* release, uint32_t* revision, uint32_t* beta, uint32_t* conf, uint32_t* le, char16_type* lang) {
@@ -5521,27 +5676,22 @@ api_bool API_Global_GetGlobalFlag(const char* flag_name, api_bool* value) {
 
 // Mock for GetGlobalInteger
 int API_Global_GetGlobalInteger(const char* int_name, void* value, api_bool isSigned) {
-    LogDbg("GetGlobalInteger called with: " + std::string(int_name ? int_name : "(null)"));
+    std::string skey(int_name ? int_name : "(null)");
+    LogDbg("GetGlobalInteger called with: " + skey);
+    preload_default_global_settings();
     
     if (!value) {
         return 0; // api_false
     }
-    
-    // Return default values for common integers
-    if (int_name) {
-        std::string name = int_name;
-        if (name.find("MaxProcessors") != std::string::npos) {
-	  *(int *)value = 4; // Default to 4 processors
-        } else if (name.find("ThreadPriority") != std::string::npos) {
-            *(int *)value = 3; // Normal priority
-        } else {
-            *(int *)value = 0; // Default value
-        }
-    } else {
-        *(int *)value = 0;
-    }
-    
-    return 1; // api_true - success
+
+    auto it = g_settings_global.find(skey);
+    if (it == g_settings_global.end())
+	  {
+	    LogDbg("API_Global_GetGlobalInteger missing: " + skey);
+            return api_false;
+	  }
+    *(int *)value = it->second;
+    return api_true;
 }
 
 // Mock for GetUIObjectRefCount
@@ -7358,11 +7508,7 @@ extern "C"
 
      abort();
    }
-   api_bool    (API_Global_ReadSettingsInteger)( api_handle, int32*, const char* key, api_bool global )
-   {
 
-     abort();
-   }
    api_bool    (API_Global_ReadSettingsUnsignedInteger)( api_handle, uint32*, const char* key, api_bool global )
    {
 
@@ -9968,26 +10114,32 @@ void API_Control_GetFrameRect(const_control_handle handle,
     if (h) *h = r.height();
 }
 
-void API_Control_GetClientRect(const_control_handle handle,
-                               int32* x, int32* y, int32* w, int32* h)
+api_bool API_Control_GetClientRect(const_control_handle handle,
+                                   int32* x, int32* y,
+                                   int32* w, int32* hgt)
 {
-    LogDebug("GetClientRect called");
+    if (!w || !hgt) return api_false;
+    
+    MockControl* wdg = GetControlBox(handle);
+    if (wdg) {
+    QRect r = wdg->widget->contentsRect();
 
-    QWidget* widget = reinterpret_cast<QWidget*>(const_cast<control_handle>(handle));
-    if (!widget) {
-        LogDebug("GetClientRect: null widget");
-        if (x) *x = 0; if (y) *y = 0; if (w) *w = 0; if (h) *h = 0;
-        return;
+      if (x) *x = r.x();
+      if (y) *y = r.y();
+      *w   = r.width();
+      *hgt = r.height();
+
+      return api_true;
+
     }
 
-    // Qt’s "client rect" (content area) → contentsRect()
-    QRect r = widget->contentsRect();
+    // Return a harmless safe rect
+    if (x) *x = 0;
+    if (y) *y = 0;
+    *w   = 0;
+    *hgt = 0;
+    return api_true;
 
-    // contentsRect() is *relative to the widget*, generally (0,0)
-    if (x) *x = r.x();
-    if (y) *y = r.y();
-    if (w) *w = r.width();
-    if (h) *h = r.height();
 }
 
 void API_Control_SetClientRect(control_handle handle,
@@ -10173,8 +10325,12 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
    {
        LogDbg("API_Control_SetChildControlToFocus called");
 
-       QWidget* parent = reinterpret_cast<QWidget*>(parentHandle);
-       QWidget* child  = reinterpret_cast<QWidget*>(childHandle);
+       MockControl* pwdg = GetControlBox(parentHandle);
+       if (!pwdg) return api_false;
+       QWidget* parent = pwdg->widget;
+       MockControl* cwdg = GetControlBox(childHandle);
+       if (!cwdg) return api_false;
+       QWidget* child = cwdg->widget;
 
        if (!parent || !child)
 	   return api_false;
@@ -10280,7 +10436,9 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
    {
        LogDbg("API_Control_SetControlBackgroundColor called");
 
-       QWidget* w = reinterpret_cast<QWidget*>(handle);
+       MockControl* wdg = GetControlBox(handle);
+       if (!wdg) return api_false;
+       QWidget* w = wdg->widget;
        if (!w)
 	   return api_false;
 
@@ -11967,574 +12125,802 @@ api_bool API_ScrollBox_SetScrollBoxVerticalRangeUpdatedEventRoutine(control_hand
 // TreeBoxContext API
 // ----------------------------------------------------------------------------
 
+control_handle (API_TreeBox_CreateTreeBox)( api_handle module,
+                                            api_handle client,
+                                            control_handle parent,
+                                            uint32 /*flags*/ )
+{
+    Q_UNUSED(module);
+    LogDbg("CreateTreeBox called");
+
+    auto* tree = new QTreeWidget;
+    if (parent)
+        tree->setParent(reinterpret_cast<QWidget*>(parent));
+
+    // Sensible defaults
+    tree->setColumnCount(1);
+    tree->setHeaderHidden(false);
+
+    auto* mock = new MockTreeBox;
+    mock->widget       = tree;
+    mock->tree         = tree;
+    mock->clientHandle = client;
+    mock->layout       = nullptr;
+
+    control_handle handle = reinterpret_cast<control_handle>(tree);
+
+    {
+        std::lock_guard<std::mutex> lock(g_treebox_mutex);
+        g_treebox_map[handle] = mock;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_control_map_mutex);
+        g_control_map[handle] = mock;
+    }
+
+    return handle;
+}
+
+control_handle (API_TreeBox_CreateTreeBoxViewport)( control_handle hTree,
+                                                    api_handle    /*client*/ )
+{
+    LogDbg("CreateTreeBoxViewport called");
+
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return nullptr;
+
+    QWidget* viewport = mock->tree->viewport();
+    return reinterpret_cast<control_handle>(viewport);
+}
+
 api_handle API_TreeBox_CreateTreeBoxNode(api_handle, api_handle nodeClient)
 {
-
-  abort();
-}
-int32 API_TreeBox_GetTreeBoxChildCount(const_control_handle)
-{
-
-  //  abort();
-  return 1;
-}
-  
-api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
-{
-  // returns client handle
-  abort();
+    // In the PCL API, nodeClient is already the pcl::TreeBox::Node*.
+    // We just use that as the handle.
+    LogDbg("CreateTreeBoxNode called");
+    return nodeClient;
 }
 
-   int32          (API_TreeBox_GetTreeBoxChildIndex)( const_control_handle, const_api_handle )
-   {
-
-     //   abort();
-     return 0;
-   }
-
-   void           (API_TreeBox_InsertTreeBoxNode)( control_handle, int32, api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_RemoveTreeBoxNode)( control_handle, int32 )
-   {
-
-     abort();
-   }
-
-   void           (API_TreeBox_ClearTreeBox)( control_handle )
-   {
-
-     //     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxUniformRowHeightEnabled)( const_control_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxUniformRowHeightEnabled)( control_handle, api_bool )
-   {
-
-     abort();
-   }
-
-api_handle API_TreeBox_GetTreeBoxCurrentNode(const_control_handle handle)
+int32 API_TreeBox_GetTreeBoxChildCount(const_control_handle hTree)
 {
-    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return 0;
 
-    auto it = g_control_map.find(handle);
-    if (it == g_control_map.end())
+    return mock->tree->topLevelItemCount();
+}
+
+api_handle API_TreeBox_GetTreeBoxChild(const_control_handle hTree, int32 idx)
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
         return nullptr;
 
-    MockTreeBox* mock = (MockTreeBox *)(it->second);
-    if (!mock->widget)
+    QTreeWidget* tree = mock->tree;
+    if (idx < 0 || idx >= tree->topLevelItemCount())
         return nullptr;
-    /*
-    QTreeWidgetItem* item = mock->widget->currentItem();
+
+    QTreeWidgetItem* item = tree->topLevelItem(idx);
     if (!item)
         return nullptr;
 
-    auto it2 = mock->nodeMap.find(item);
-    if (it2 == mock->nodeMap.end())
-        return nullptr;
-
-    pcl::TreeBox::Node* node = it2->second;
-
+    pcl::TreeBox::Node* node = NodeFromItem(item);
     return reinterpret_cast<api_handle>(node);
-    */
-    return reinterpret_cast<api_handle>(mock->widget);
-    
 }
 
-   void           (API_TreeBox_SetTreeBoxCurrentNode)( control_handle, api_handle )
-   {
+int32 (API_TreeBox_GetTreeBoxChildIndex)( const_control_handle hTree,
+                                           const_api_handle    hNode )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return -1;
 
-     abort();
-   }
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return -1;
 
-   api_bool       (API_TreeBox_GetTreeBoxMultipleNodeSelectionEnabled)( const_control_handle )
-   {
+    QTreeWidget* tree = mock->tree;
+    QTreeWidgetItem* parent = item->parent();
 
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxMultipleNodeSelectionEnabled)( control_handle, api_bool )
+    if (!parent)
+    {
+        int idx = tree->indexOfTopLevelItem(item);
+        return idx;
+    }
+
+    return parent->indexOfChild(item);
+}
+
+void (API_TreeBox_InsertTreeBoxNode)( control_handle hTree,
+                                      int32          index,
+                                      api_handle     hNode )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    QTreeWidget* tree = mock->tree;
+    auto* node = reinterpret_cast<pcl::TreeBox::Node*>(hNode);
+
+    auto* item = new QTreeWidgetItem;
+    if (index < 0 || index > tree->topLevelItemCount())
+        tree->addTopLevelItem(item);
+    else
+        tree->insertTopLevelItem(index, item);
+
+    {
+        std::lock_guard<std::mutex> lock(g_treebox_mutex);
+        g_node_to_item[node] = item;
+        g_item_to_node[item] = node;
+    }
+}
+
+void (API_TreeBox_RemoveTreeBoxNode)( control_handle hTree, int32 index )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    QTreeWidget* tree = mock->tree;
+    if (index < 0 || index >= tree->topLevelItemCount())
+        return;
+
+    QTreeWidgetItem* item = tree->takeTopLevelItem(index);
+    if (!item)
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(g_treebox_mutex);
+        RemoveItemSubtreeFromMaps(item);
+    }
+
+    delete item;
+}
+
+void (API_TreeBox_ClearTreeBox)( control_handle hTree )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    QTreeWidget* tree = mock->tree;
+
+    {
+        std::lock_guard<std::mutex> lock(g_treebox_mutex);
+
+        // Remove all items belonging to this tree from the maps.
+        const int topCount = tree->topLevelItemCount();
+        for (int i = 0; i < topCount; ++i)
+            RemoveItemSubtreeFromMaps(tree->topLevelItem(i));
+    }
+
+    tree->clear();
+}
+
+api_handle API_TreeBox_GetTreeBoxCurrentNode(const_control_handle hTree)
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return nullptr;
+
+    QTreeWidgetItem* item = mock->tree->currentItem();
+    if (!item)
+        return nullptr;
+
+    pcl::TreeBox::Node* node = NodeFromItem(item);
+    return reinterpret_cast<api_handle>(node);
+}
+
+void (API_TreeBox_SetTreeBoxCurrentNode)( control_handle hTree,
+                                          api_handle     hNode )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return;
+
+    mock->tree->setCurrentItem(item);
+}
+
+api_bool (API_TreeBox_GetTreeBoxMultipleNodeSelectionEnabled)(
+    const_control_handle hTree )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return api_false;
+
+    QAbstractItemView::SelectionMode mode = mock->tree->selectionMode();
+    return (mode == QAbstractItemView::ExtendedSelection ||
+            mode == QAbstractItemView::MultiSelection)
+               ? api_true
+               : api_false;
+}
+
+void (API_TreeBox_SetTreeBoxMultipleNodeSelectionEnabled)(
+    control_handle hTree, api_bool enabled )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    mock->multipleSelection = (enabled != 0);
+
+    mock->tree->setSelectionMode(
+        enabled ? QAbstractItemView::ExtendedSelection
+                : QAbstractItemView::SingleSelection);
+}
+
+api_bool (API_TreeBox_GetTreeBoxSelectedNodes)( const_control_handle hTree,
+                                                api_handle*          outNodes,
+                                                size_type*           ioLen )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+    {
+        if (ioLen)
+            *ioLen = 0;
+        return api_false;
+    }
+
+    QList<QTreeWidgetItem*> selItems = mock->tree->selectedItems();
+    size_type count = selItems.size();
+
+    if (!ioLen)
+        return api_false;
+
+    if (!outNodes)
+    {
+        *ioLen = count;
+        return api_true;
+    }
+
+    if (*ioLen < count)
+    {
+        *ioLen = count;
+        return api_false;
+    }
+
+    size_type i = 0;
+    for (QTreeWidgetItem* item : selItems)
+    {
+        pcl::TreeBox::Node* node = NodeFromItem(item);
+        outNodes[i++] = reinterpret_cast<api_handle>(node);
+    }
+
+    *ioLen = count;
+    return api_true;
+}
+
+api_handle (API_TreeBox_GetTreeBoxNodeByPos)( const_control_handle hTree,
+                                              int32 x, int32 y )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return nullptr;
+
+    QTreeWidget* tree = mock->tree;
+    QTreeWidgetItem* item = tree->itemAt(x, y);
+    if (!item)
+        return nullptr;
+
+    pcl::TreeBox::Node* node = NodeFromItem(item);
+    return reinterpret_cast<api_handle>(node);
+}
+
+void (API_TreeBox_SetTreeBoxNodeIntoView)( control_handle hTree,
+                                           api_handle     hNode )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return;
+
+    mock->tree->scrollToItem(item);
+}
+
+void (API_TreeBox_GetTreeBoxNodeRect)( const_control_handle hTree,
+                                       const_api_handle     hNode,
+                                       int32* x, int32* y,
+                                       int32* w, int32* h )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return;
+
+    QRect r = mock->tree->visualItemRect(item);
+    if (x) *x = r.x();
+    if (y) *y = r.y();
+    if (w) *w = r.width();
+    if (h) *h = r.height();
+}
+
+int32 (API_TreeBox_GetTreeBoxColumnCount)( const_control_handle hTree )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return 0;
+    return mock->tree->columnCount();
+}
+
+void (API_TreeBox_SetTreeBoxColumnCount)( control_handle hTree, int32 n )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+    if (n < 1)
+        n = 1;
+    mock->tree->setColumnCount(n);
+}
+
+api_bool (API_TreeBox_GetTreeBoxColumnVisible)( const_control_handle hTree,
+                                                int32 col )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return api_false;
+
+    return mock->tree->isColumnHidden(col) ? api_false : api_true;
+}
+
+void (API_TreeBox_SetTreeBoxColumnVisible)( control_handle hTree,
+                                            int32 col, api_bool vis )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    mock->tree->setColumnHidden(col, vis ? false : true);
+}
+
+int32 (API_TreeBox_GetTreeBoxColumnWidth)( const_control_handle hTree,
+                                           int32 col )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return 0;
+
+    return mock->tree->columnWidth(col);
+}
+
+void (API_TreeBox_SetTreeBoxColumnWidth)( control_handle hTree,
+                                          int32 col, int32 width )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    mock->tree->setColumnWidth(col, width);
+}
+
+void (API_TreeBox_AdjustTreeBoxColumnWidthToContents)( control_handle hTree,
+                                                       int32 col )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    mock->tree->resizeColumnToContents(col);
+}
+
+// For now: we just store header text in the QTreeWidgetItem header.
+// You can add proper UTF-16 conversion if/when needed.
+api_bool (API_TreeBox_GetTreeBoxHeaderText)( const_control_handle hTree,
+                                             int32 /*col*/,
+                                             char16_type* text,
+                                             size_type*   len )
+{
+    if (len)
+        *len = 0;
+    if (text)
+        *text = 0;
+    // Not used in your tests yet; returning false is fine.
+    return api_false;
+}
+
+void (API_TreeBox_SetTreeBoxHeaderText)( control_handle hTree,
+                                         int32 col,
+                                         const char16_type* text )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    QString qtext = QString::fromUtf16(
+        reinterpret_cast<const ushort*>(text));
+    QTreeWidgetItem* headerItem = mock->tree->headerItem();
+    if (!headerItem)
+    {
+        headerItem = new QTreeWidgetItem;
+        mock->tree->setHeaderItem(headerItem);
+    }
+    headerItem->setText(col, qtext);
+}
+
+bitmap_handle (API_TreeBox_GetTreeBoxHeaderIcon)( const_control_handle,
+                                                  int32 )
+{
+    return nullptr;
+}
+
+void (API_TreeBox_SetTreeBoxHeaderIcon)( control_handle,
+                                         int32, const_bitmap_handle )
+{
+    // Not needed for tests; no-op.
+}
+
+int32 (API_TreeBox_GetTreeBoxHeaderAlignment)( const_control_handle,
+                                               int32 )
+{
+    return 0;
+}
+
+void (API_TreeBox_SetTreeBoxHeaderAlignment)( control_handle,
+                                              int32, int32 )
+{
+    // No-op
+}
+
+api_bool (API_TreeBox_GetTreeBoxHeaderVisible)( const_control_handle hTree )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return api_false;
+
+    return mock->tree->header()->isHidden() ? api_false : api_true;
+}
+
+void (API_TreeBox_SetTreeBoxHeaderVisible)( control_handle hTree,
+                                            api_bool vis )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    mock->tree->header()->setHidden(vis ? false : true);
+}
+
+int32 (API_TreeBox_GetTreeBoxIndentSize)( const_control_handle hTree )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return 0;
+    return mock->tree->indentation();
+}
+
+void (API_TreeBox_SetTreeBoxIndentSize)( control_handle hTree, int32 size )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+    mock->tree->setIndentation(size);
+}
+
+api_bool (API_TreeBox_GetTreeBoxHeaderSortingEnabled)(
+    const_control_handle hTree )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return api_false;
+
+    return mock->tree->isSortingEnabled() ? api_true : api_false;
+}
+
+void (API_TreeBox_SetTreeBoxHeaderSortingEnabled)(
+    control_handle hTree, api_bool enabled )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    mock->tree->setSortingEnabled(enabled != 0);
+}
+
+void (API_TreeBox_SortTreeBox)( control_handle hTree,
+                                int32 col, api_bool ascending )
+{
+    auto* mock = GetMockTreeBox(hTree);
+    if (!mock || !mock->tree)
+        return;
+
+    mock->tree->sortItems(col,
+        ascending ? Qt::AscendingOrder : Qt::DescendingOrder);
+}
+
+control_handle (API_TreeBox_GetTreeBoxNodeParentBox)( const_api_handle hNode )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return nullptr;
+
+    QTreeWidget* tree = item->treeWidget();
+    return reinterpret_cast<control_handle>(tree);
+}
+
+api_handle (API_TreeBox_GetTreeBoxNodeParent)( const_api_handle hNode )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return nullptr;
+
+    QTreeWidgetItem* parent = item->parent();
+    if (!parent)
+        return nullptr;
+
+    pcl::TreeBox::Node* node = NodeFromItem(parent);
+    return reinterpret_cast<api_handle>(node);
+}
+
+int32 (API_TreeBox_GetTreeBoxNodeChildCount)( const_api_handle hNode )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return 0;
+
+    return item->childCount();
+}
+
+api_handle (API_TreeBox_GetTreeBoxNodeChild)( const_api_handle hNode,
+                                              int32            idx )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return nullptr;
+
+    if (idx < 0 || idx >= item->childCount())
+        return nullptr;
+
+    QTreeWidgetItem* child = item->child(idx);
+    if (!child)
+        return nullptr;
+
+    pcl::TreeBox::Node* node = NodeFromItem(child);
+    return reinterpret_cast<api_handle>(node);
+}
+
+void (API_TreeBox_InsertTreeBoxNodeChild)( api_handle hParentNode,
+                                           int32      idx,
+                                           api_handle hChildNode )
+{
+    QTreeWidgetItem* parentItem = ItemFromNodeHandle(hParentNode);
+    if (!parentItem)
+        return;
+
+    auto* childNode = reinterpret_cast<pcl::TreeBox::Node*>(hChildNode);
+    auto* childItem = new QTreeWidgetItem;
+
+    if (idx < 0 || idx > parentItem->childCount())
+        parentItem->addChild(childItem);
+    else
+        parentItem->insertChild(idx, childItem);
+
+    std::lock_guard<std::mutex> lock(g_treebox_mutex);
+    g_node_to_item[childNode] = childItem;
+    g_item_to_node[childItem] = childNode;
+}
+
+void (API_TreeBox_RemoveTreeBoxNodeChild)( api_handle hParentNode,
+                                           int32      idx )
+{
+    QTreeWidgetItem* parentItem = ItemFromNodeHandle(hParentNode);
+    if (!parentItem)
+        return;
+
+    if (idx < 0 || idx >= parentItem->childCount())
+        return;
+
+    QTreeWidgetItem* child = parentItem->takeChild(idx);
+    if (!child)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_treebox_mutex);
+    RemoveItemSubtreeFromMaps(child);
+    delete child;
+}
+
+// Basic enabled / expanded / selected flags via Qt::ItemFlags & QTreeWidget API.
+
+api_bool (API_TreeBox_GetTreeBoxNodeEnabled)( const_api_handle hNode )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return api_false;
+
+    return (item->flags() & Qt::ItemIsEnabled) ? api_true : api_false;
+}
+
+void (API_TreeBox_SetTreeBoxNodeEnabled)( api_handle hNode, api_bool enabled )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return;
+
+    Qt::ItemFlags f = item->flags();
+    if (enabled)
+        f |= Qt::ItemIsEnabled;
+    else
+        f &= ~Qt::ItemIsEnabled;
+    item->setFlags(f);
+}
+
+api_bool (API_TreeBox_GetTreeBoxNodeExpanded)( const_api_handle hNode )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return api_false;
+
+    return item->isExpanded() ? api_true : api_false;
+}
+
+void (API_TreeBox_SetTreeBoxNodeExpanded)( api_handle hNode, api_bool exp )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return;
+
+    item->setExpanded(exp != 0);
+}
+
+api_bool (API_TreeBox_GetTreeBoxNodeSelected)( const_api_handle hNode )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return api_false;
+
+    return item->isSelected() ? api_true : api_false;
+}
+
+void (API_TreeBox_SetTreeBoxNodeSelected)( api_handle hNode, api_bool sel )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return;
+
+    item->setSelected(sel != 0);
+}
+
+api_bool (API_TreeBox_GetTreeBoxNodeColText)( const_api_handle /*hNode*/,
+                                              int32, char16_type* text,
+                                              size_type* len )
+{
+    // For now, we don't need to round-trip text out via the API
+    // in your tests. Return empty string.
+    if (len)
+        *len = 0;
+    if (text)
+        *text = 0;
+    return api_false;
+}
+
+void (API_TreeBox_SetTreeBoxNodeColText)( api_handle hNode,
+                                          int32 col,
+                                          const char16_type* text )
+{
+    QTreeWidgetItem* item = ItemFromNodeHandle(hNode);
+    if (!item)
+        return;
+
+    QString qtext = QString::fromUtf16(
+        reinterpret_cast<const ushort*>(text));
+    item->setText(col, qtext);
+}
+
+// stubs
+
+void           (API_TreeBox_SelectAllTreeBoxNodes)( control_handle )
    {
 
      //     abort();
    }
 
-   api_bool       (API_TreeBox_GetTreeBoxSelectedNodes)( const_control_handle, api_handle*, size_type* )
+api_bool       (API_TreeBox_GetTreeBoxAlternateRowColorEnabled)( const_control_handle )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
 
-   void           (API_TreeBox_SelectAllTreeBoxNodes)( control_handle )
-   {
-
-     abort();
-   }
-
-   void           (API_TreeBox_BeginTreeBoxNodeEdition)( control_handle, api_handle, int32 col )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_EndTreeBoxNodeEdition)( control_handle, api_handle, int32 col )
-   {
-
-     abort();
-   }
-
-   void           (API_TreeBox_EditTreeBoxNode)( control_handle, api_handle, int32 col )
-   {
-
-     abort();
-   }
-
-   api_handle     (API_TreeBox_GetTreeBoxNodeByPos)( const_control_handle, int32 x, int32 y )
-   {
-     // returns client handle
-     abort();
-   }
-
-   void           (API_TreeBox_SetTreeBoxNodeIntoView)( control_handle, api_handle )
-   {
-
-     abort();
-   }
-
-   void           (API_TreeBox_GetTreeBoxNodeRect)( const_control_handle, const_api_handle, int32*, int32*, int32*, int32* )
-   {
-
-     abort();
-   }
-
-   int32          (API_TreeBox_GetTreeBoxColumnCount)( const_control_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxColumnCount)( control_handle, int32 )
+void           (API_TreeBox_SetTreeBoxAlternateRowColorEnabled)( control_handle, api_bool )
    {
 
      //     abort();
    }
 
-   api_bool       (API_TreeBox_GetTreeBoxColumnVisible)( const_control_handle, int32 )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxColumnVisible)( control_handle, int32, api_bool )
-   {
-
-     //  abort();
-   }
-
-   int32          (API_TreeBox_GetTreeBoxColumnWidth)( const_control_handle, int32 )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxColumnWidth)( control_handle, int32, int32 )
+api_bool       (API_TreeBox_SetTreeBoxCurrentNodeUpdatedEventRoutine)( control_handle, api_handle, pcl::item_range_event_routine )
    {
 
      //     abort();
+     return api_true;
    }
 
-   void           (API_TreeBox_AdjustTreeBoxColumnWidthToContents)( control_handle, int32 )
+api_bool       (API_TreeBox_SetTreeBoxNodeActivatedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
    {
 
      //     abort();
+     return api_true;
    }
 
-   api_bool       (API_TreeBox_GetTreeBoxHeaderText)( const_control_handle, int32, char16_type*, size_type* )
+api_bool       (API_TreeBox_SetTreeBoxNodeUpdatedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
-   void           (API_TreeBox_SetTreeBoxHeaderText)( control_handle, int32, const char16_type* )
+
+api_bool       (API_TreeBox_SetTreeBoxNodeEnteredEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
+   {
+
+     //     abort();
+     return api_true;
+   }
+
+api_bool       (API_TreeBox_SetTreeBoxNodeClickedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
+   {
+
+     //     abort();
+     return api_true;
+   }
+
+api_bool       (API_TreeBox_SetTreeBoxNodeDoubleClickedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
+   {
+
+     //     abort();
+     return api_true;
+   }
+
+api_bool       (API_TreeBox_SetTreeBoxNodeExpandedEventRoutine)( control_handle, api_handle, pcl::item_event_routine )
+   {
+
+     //     abort();
+     return api_true;
+   }
+
+api_bool       (API_TreeBox_SetTreeBoxNodeCollapsedEventRoutine)( control_handle, api_handle, pcl::item_event_routine )
+   {
+
+     //     abort();
+     return api_true;
+   }
+
+api_bool       (API_TreeBox_SetTreeBoxNodeSelectionUpdatedEventRoutine)( control_handle, api_handle, pcl::event_routine )
+   {
+
+     //     abort();
+     return api_true;
+   }
+
+ void           (API_TreeBox_SetTreeBoxNodeColAlignment)( api_handle, int32, int32 )
    {
 
      //    abort();
    }
 
-   bitmap_handle  (API_TreeBox_GetTreeBoxHeaderIcon)( const_control_handle, int32 )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxHeaderIcon)( control_handle, int32, const_bitmap_handle )
+   void           (API_TreeBox_SetTreeBoxNodeColIcon)( api_handle, int32, const_bitmap_handle )
    {
 
      //    abort();
    }
 
-   int32          (API_TreeBox_GetTreeBoxHeaderAlignment)( const_control_handle, int32 )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxHeaderAlignment)( control_handle, int32, int32 )
-   {
-
-     //    abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxHeaderVisible)( const_control_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxHeaderVisible)( control_handle, api_bool )
+   void           (API_TreeBox_SetTreeBoxNodeColToolTip)( api_handle, int32, const char16_type* )
    {
 
      //     abort();
    }
 
-   int32          (API_TreeBox_GetTreeBoxIndentSize)( const_control_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxIndentSize)( control_handle, int32 )
-   {
-
-     //   abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeExpansionEnabled)( const_control_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeExpansionEnabled)( control_handle, api_bool )
-   {
-
-     //    abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxRootDecorationEnabled)( const_control_handle )
-   {
-
-     abort();
-   }
    void           (API_TreeBox_SetTreeBoxRootDecorationEnabled)( control_handle, api_bool )
    {
 
      //     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxAlternateRowColorEnabled)( const_control_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxAlternateRowColorEnabled)( control_handle, api_bool )
-   {
-
-     //     abort();
-   }
-
-   void           (API_TreeBox_GetTreeBoxIconSize)( const_control_handle, int32*, int32* )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxIconSize)( control_handle, int32, int32 )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxHeaderSortingEnabled)( const_control_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxHeaderSortingEnabled)( control_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   void           (API_TreeBox_SortTreeBox)( control_handle, int32 col, api_bool ascending )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeDraggingEnabled)( const_control_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeDraggingEnabled)( control_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   // TreeBox Nodes
-
-   control_handle (API_TreeBox_GetTreeBoxNodeParentBox)( const_api_handle )
-   {
-     // returns client handle
-     abort();
-   }
-
-   api_handle     (API_TreeBox_GetTreeBoxNodeParent)( const_api_handle )
-   {
-     // returns client handle
-     abort();
-   }
-
-   int32          (API_TreeBox_GetTreeBoxNodeChildCount)( const_api_handle )
-   {
-
-     abort();
-   }
-
-   api_handle     (API_TreeBox_GetTreeBoxNodeChild)( const_api_handle, int32 )
-   {
-     // returns client handle
-     abort();
-   }
-
-   void           (API_TreeBox_InsertTreeBoxNodeChild)( api_handle, int32, api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_RemoveTreeBoxNodeChild)( api_handle, int32 )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeEnabled)( const_api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeEnabled)( api_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeExpanded)( const_api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeExpanded)( api_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeSelectable)( const_api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeSelectable)( api_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeSelected)( const_api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeSelected)( api_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeCheckable)( const_api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeCheckable)( api_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeChecked)( const_api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeChecked)( api_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeEditable)( const_api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeEditable)( api_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeFirstColumnSpanned)( const_api_handle )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeFirstColumnSpanned)( api_handle, api_bool )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeColText)( const_api_handle, int32, char16_type*, size_type* )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeColText)( api_handle, int32, const char16_type* )
-   {
-
-     abort();
-   }
-
-   bitmap_handle  (API_TreeBox_GetTreeBoxNodeColIcon)( const_api_handle, int32 )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeColIcon)( api_handle, int32, const_bitmap_handle )
-   {
-
-     abort();
-   }
-
-   int32          (API_TreeBox_GetTreeBoxNodeColAlignment)( const_api_handle, int32 )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeColAlignment)( api_handle, int32, int32 )
-   {
-
-     abort();
-   }
-
-   api_bool       (API_TreeBox_GetTreeBoxNodeColToolTip)( const_api_handle, int32, char16_type*, size_type* )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeColToolTip)( api_handle, int32, const char16_type* )
-   {
-
-     abort();
-   }
-
-   font_handle    (API_TreeBox_GetTreeBoxNodeColFont)( const_api_handle, int32 )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeColFont)( api_handle, int32, const_font_handle )
-   {
-
-     abort();
-   }
-
-   uint32         (API_TreeBox_GetTreeBoxNodeColBackgroundColor)( const_api_handle, int32 )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeColBackgroundColor)( api_handle, int32, uint32 )
-   {
-
-     abort();
-   }
-
-   uint32         (API_TreeBox_GetTreeBoxNodeColTextColor)( const_api_handle, int32 )
-   {
-
-     abort();
-   }
-   void           (API_TreeBox_SetTreeBoxNodeColTextColor)( api_handle, int32, uint32 )
-   {
-
-     abort();
-   }
-
-   // TreeBox Events
-
-   api_bool       (API_TreeBox_SetTreeBoxCurrentNodeUpdatedEventRoutine)( control_handle, api_handle, pcl::item_range_event_routine )
-   {
-
-     //     abort();
-     return api_true;
-   }
-   api_bool       (API_TreeBox_SetTreeBoxNodeActivatedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
-   {
-
-     //     abort();
-     return api_true;
-   }
-   api_bool       (API_TreeBox_SetTreeBoxNodeUpdatedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
-   {
-
-     //     abort();
-     return api_true;
-   }
-   api_bool       (API_TreeBox_SetTreeBoxNodeEnteredEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
-   {
-
-     //     abort();
-     return api_true;
-   }
-   api_bool       (API_TreeBox_SetTreeBoxNodeClickedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
-   {
-
-     //     abort();
-     return api_true;
-   }
-   api_bool       (API_TreeBox_SetTreeBoxNodeDoubleClickedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
-   {
-
-     //     abort();
-     return api_true;
-   }
-   api_bool       (API_TreeBox_SetTreeBoxNodeExpandedEventRoutine)( control_handle, api_handle, pcl::item_event_routine )
-   {
-
-     //     abort();
-     return api_true;
-   }
-   api_bool       (API_TreeBox_SetTreeBoxNodeCollapsedEventRoutine)( control_handle, api_handle, pcl::item_event_routine )
-   {
-
-     //     abort();
-     return api_true;
-   }
-   api_bool       (API_TreeBox_SetTreeBoxNodeSelectionUpdatedEventRoutine)( control_handle, api_handle, pcl::event_routine )
-   {
-
-     //     abort();
-     return api_true;
    }
 
 // ----------------------------------------------------------------------------

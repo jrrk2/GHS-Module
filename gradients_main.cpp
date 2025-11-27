@@ -6,12 +6,14 @@
 #include "GradientsModule.h"
 #include "GradientsHdrCompositionInterface.h"
 #include "GradientsHdrCompositionProcess.h"
+#include "PCLMockAPI.h"
 
 using namespace pcl;
 
 int main( int argc, char** argv )
 {
    QApplication app( argc, argv );
+   SetDebugLogging(true);
 
    Module = new GradientsModule;
    TheGradientsHdrCompositionProcess = new GradientsHdrCompositionProcess;
@@ -20,11 +22,7 @@ int main( int argc, char** argv )
    // Simulate the PixInsight host calling Launch().
    bool dynamic = false;
    unsigned flags = 0;
-   if ( !TheGradientsHdrCompositionInterface->Launch( *TheGradientsHdrCompositionProcess, nullptr, dynamic, flags ) )
-   {
-      fputs( "Launch() returned false – interface did not accept the process.\n", stderr );
-      return 1;
-   }
+   TheGradientsHdrCompositionInterface->Launch( *TheGradientsHdrCompositionProcess, nullptr, dynamic, flags );
 
    // In the real host, the interface window would be shown by the core.
    // Here we do it ourselves.

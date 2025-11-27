@@ -9,7 +9,7 @@
 # Configuration ... Release/arm64
 ######################################################################
 
-MAIN=SandboxInterfaceTests
+MAIN=gradients_main
 OBJ_DIR="arm64/Release"
 
 .PHONY: all
