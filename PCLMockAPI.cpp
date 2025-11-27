@@ -242,6 +242,47 @@ static MockControl* g_lastTopLevelControl = nullptr;
 // Simple error code storage
 static int g_last_error = 0;
 
+// Runtime value of PCL's "null control"
+static api_handle g_pcl_null_control = nullptr;
+
+// Called from main() before any GUI creation
+void PCLMockAPI_SetNullControlHandle( void )
+{
+  g_pcl_null_control = reinterpret_cast<api_handle>( pcl::Control::Null().handle );
+}
+
+static inline bool IsNullOrInvalidControl(api_handle h)
+{
+    if (h == nullptr)
+        return true;
+
+    if (!g_pcl_null_control)  PCLMockAPI_SetNullControlHandle();
+    
+    if (h == g_pcl_null_control)
+        return true;
+
+    // If the handle does not exist in our map, treat it as null
+    if (g_control_map.find(h) == g_control_map.end())
+        return true;
+
+    return false;
+}
+
+// Return the QWidget associated with a control_handle (MockControl*)
+// or nullptr if invalid.
+static QWidget* GetWidgetForControl( control_handle h )
+{
+    auto it = g_control_map.find( h );
+    if ( it == g_control_map.end() )
+        return nullptr;
+
+    MockControl* mc = it->second;
+    if ( mc == nullptr )
+        return nullptr;
+
+    return mc->widget; // this is the real QWidget*
+}
+
 //---------------------------------------------------------------------
 // Generic helpers
 //---------------------------------------------------------------------
@@ -360,47 +401,64 @@ std::string Utf16ToUtf8(const char16_type* utf16Str) {
 //---------------------------------------------------------------------
 
 extern "C" {
-control_handle API_Control_CreateControl( api_handle hModule,
-                                          api_handle client,
-                                          control_handle parent,
+  /*
+control_handle API_Control_CreateControl(api_handle module, api_handle client,
+                                         control_handle parent, uint32 flags)
+{
+    LogDebug("CreateControl called");
+
+    QWidget* widget = nullptr;
+
+    if (parent == nullptr)
+    {
+        // TOP-LEVEL CONTROL → MUST BE A WINDOW
+        widget = new QWidget(nullptr, Qt::Window);
+        widget->setWindowTitle("PCL Interface Window");
+        LogDebug("CreateControl: TOP-LEVEL WINDOW CREATED");
+    }
+    else
+    {
+        MockControl* pctrl = GetControlFromHandle(parent, "CreateControl");
+        widget = new QWidget(pctrl ? pctrl->widget : nullptr);
+    }
+
+    MockControl* ctrl = new MockControl(widget);
+    ctrl->clientHandle = client;
+    ctrl->flags = flags;
+
+    control_handle handle = reinterpret_cast<control_handle>(ctrl);
+
+    {
+        std::lock_guard<std::mutex> lock(g_control_map_mutex);
+        g_control_map[handle] = ctrl;
+    }
+
+    return handle;
+}  
+  */
+
+control_handle API_Control_CreateControl( api_handle module,
+                                          api_handle parent,
                                           uint32 flags )
 {
-   Q_UNUSED( flags );
+    (void)module;
+    (void)flags;
 
-   LogDebug( "[PCLMockAPI] CreateControl called" );
+    QWidget* parentWidget = nullptr;
 
-   QWidget* parentWidget = parent
-                         ? WidgetFromHandle( parent, "API_Control_CreateControl" )
-                         : nullptr;
+    if (!IsNullOrInvalidControl(parent))
+    {
+        parentWidget = g_control_map[parent]->widget;   // safe
+    }
 
-   QWidget* widget = new QWidget( parentWidget );
-   widget->setAttribute( Qt::WA_DeleteOnClose );
+    QWidget* w = new QWidget(parentWidget);
+    auto* mock = new MockControl(parentWidget);
 
-   // If no parent, treat as top-level window.
-   if ( !parentWidget )
-      widget->setWindowFlag( Qt::Window, true );
+    control_handle h = reinterpret_cast<control_handle>(mock);
 
-   auto* ctrl = new MockControl( widget );
-   ctrl->moduleHandle = hModule;
-   ctrl->clientHandle = client;
+    g_control_map[h] = mock;
 
-   control_handle handle = reinterpret_cast<control_handle>( ctrl );
-
-   {
-      std::lock_guard<std::mutex> lock( g_control_map_mutex );
-      g_control_map[ handle ] = ctrl;
-   }
-   RegisterWidget( handle, widget, "API_Control_CreateControl" );
-
-   if ( !parentWidget )
-      g_lastTopLevelControl = ctrl;
-
-   LogDebug( QString( "[PCLMockAPI] CreateControl: handle=%1 widget=%2 parentWidget=%3" )
-             .arg( PtrToHex( handle ) )
-             .arg( PtrToHex( widget ) )
-             .arg( PtrToHex( parentWidget ) ) );
-
-   return handle;
+    return h;
 }
 
 void API_Control_DestroyControl( control_handle handle, api_handle client )
@@ -1637,6 +1695,7 @@ uint32 API_Global_LastError() {
     return g_last_error;
 }
 
+/*
 api_bool API_Control_GetClientRect(control_handle control,
                                    int32* x, int32* y,
                                    int32* w, int32* hgt)
@@ -1665,7 +1724,44 @@ api_bool API_Control_GetClientRect(control_handle control,
     return api_true;
 
 }
+*/
 
+api_bool API_Control_GetClientRect( control_handle control,
+                                    int32* x,
+                                    int32* y,
+                                    int32* w,
+                                    int32* hgt )
+{
+    // Null / invalid handles → zero rectangle and false
+    if ( IsNullOrInvalidControl( control ) )
+    {
+        if ( x )   *x   = 0;
+        if ( y )   *y   = 0;
+        if ( w )   *w   = 0;
+        if ( hgt ) *hgt = 0;
+        return api_false;
+    }
+
+    QWidget* widget = GetWidgetForControl( control );
+    if ( widget == nullptr )
+    {
+        if ( x )   *x   = 0;
+        if ( y )   *y   = 0;
+        if ( w )   *w   = 0;
+        if ( hgt ) *hgt = 0;
+        return api_false;
+    }
+
+    // Use the real widget’s client rect
+    const QRect r = widget->contentsRect();
+
+    if ( x )   *x   = r.x();
+    if ( y )   *y   = r.y();
+    if ( w )   *w   = r.width();
+    if ( hgt ) *hgt = r.height();
+
+    return api_true;
+}
 
 // ----------------------------------------------------------------------------
 // SpinBox Mock Implementation
