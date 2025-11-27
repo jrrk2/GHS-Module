@@ -2709,13 +2709,21 @@ control_handle API_Control_CreateControl(api_handle hModule, api_handle client,
     if (parent) {
         QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
         w->setParent(parentWidget);
+    } else {
+        // **ADD THIS**: Track top-level windows
+        g_lastTopLevelControl = reinterpret_cast<control_handle>(w);
+        LogDebug("CreateControl: TOP LEVEL window created");
+        
+        // **ADD THIS**: Make it a proper window
+        w->setWindowFlags(Qt::Window);
+        w->setAttribute(Qt::WA_DeleteOnClose, false);
     }
 
-    control_handle handle = reinterpret_cast<control_handle>(ctrl);  // <-- FIX HERE
+    control_handle handle = reinterpret_cast<control_handle>(w);
 
     {
         std::lock_guard<std::mutex> lock(g_control_map_mutex);
-        g_control_map[handle] = ctrl;  // Still store metadata keyed by widget ptr
+        g_control_map[handle] = ctrl;
     }
 
     if (!parent)
@@ -2965,27 +2973,43 @@ void API_Control_SetControlVisible(control_handle handle, api_bool visibleFlags)
     }
 
     MockControl* wdg = GetControlBox(handle);
-    if (!wdg)
+    if (!wdg) {
+        LogDebug("SetControlVisible: Could not find MockControl");
         return;
+    }
 
     QWidget* widget = wdg->widget;
-    if (!widget)
+    if (!widget) {
+        LogDebug("SetControlVisible: Widget is null");
         return;
+    }
 
-    if (visibleFlags)
+    if (visibleFlags) {
+        LogDebug("SetControlVisible: Showing widget");
         widget->show();
-    else
+        widget->raise();
+        widget->activateWindow();
+    } else {
+        LogDebug("SetControlVisible: Hiding widget");
         widget->hide();
+    }
 }
 
 void API_Control_ShowControl(control_handle handle)
 {
     LogDebug("ShowControl called");
     
+    if (!handle && g_lastTopLevelControl) {
+        handle = g_lastTopLevelControl;
+    }
+    
     MockControl* wdg = GetControlBox(handle);
     if (!wdg) return;
+    
     QWidget* widget = wdg->widget;
     widget->show();
+    widget->raise();
+    widget->activateWindow();
 }
 
 void API_Control_HideControl(control_handle handle)
@@ -3495,6 +3519,12 @@ static std::mutex g_object_id_map_mutex;
 // ----------------------------------------------------------------------------
 // UIContext API
 // ----------------------------------------------------------------------------
+
+void API_UI_FinishInterfaceConstruction()
+{
+    LogDebug("FinishInterfaceConstruction: Enabling event handlers");
+    g_constructing_gui = false;
+}
 
 api_bool API_UI_SetUIObjectId(api_handle handle, const char16_type* id)
 {
@@ -10263,11 +10293,31 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
      abort();
    }
 
-   control_handle (API_Control_GetControlWindow)( const_control_handle )
-   {
-     // returns client handle
-     abort();
-   }
+control_handle API_Control_GetControlWindow(const_control_handle handle)
+{
+    LogDebug("GetControlWindow called");
+    
+    if (!handle) {
+        return nullptr;
+    }
+    
+    MockControl* wdg = GetControlBox(handle);
+    if (!wdg) {
+        return nullptr;
+    }
+    
+    QWidget* widget = wdg->widget;
+    if (!widget) {
+        return nullptr;
+    }
+    
+    // Walk up the parent chain to find the top-level window
+    QWidget* window = widget->window();
+    
+    LogDebug("GetControlWindow: found window " + PtrToHex(window));
+    
+    return reinterpret_cast<control_handle>(window);
+}
 
    api_bool       (API_Control_GetControlMouseTrackingEnabled)( const_control_handle )
    {
