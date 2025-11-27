@@ -8,6 +8,7 @@
 #include <fitsio.h>
 
 #include <QWidget>
+#include <QTreeWidgetItem>
 #include <QBoxLayout>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -588,7 +589,7 @@ static void EnableEvents(control_handle handle, MockControl* ctrl) {
 // ----------------------------------------------------------------------------
 
 // Global map to track all controls
-static std::map<control_handle, MockControl*> g_control_map;
+static std::map<const_control_handle, MockControl*> g_control_map;
 static std::mutex g_control_map_mutex;
 
 QWidget* FindInterfaceGuiRoot()
@@ -1496,6 +1497,21 @@ void SetLogFile(const std::string& filename) {
 // Sizer Mock Implementation
 // ----------------------------------------------------------------------------
 
+// Helper to get or create MockControl for any widget
+static MockControl* GetOrCreateMockControl(control_handle handle) {
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+    auto it = g_control_map.find(handle);
+    if (it != g_control_map.end()) {
+        return it->second;
+    }
+    
+    // Create new mock control for existing widget
+    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* ctrl = new MockControl(widget);
+    g_control_map[handle] = ctrl;
+    return ctrl;
+}
+
 struct MockSizer {
     QBoxLayout* layout;
     bool vertical;
@@ -1637,7 +1653,8 @@ void API_Sizer_InsertSizerControl(sizer_handle handle, int32 index,
         return;
     }
     
-    QWidget* widget = reinterpret_cast<QWidget*>(control);
+    MockControl* ctrl = GetOrCreateMockControl(control);
+    QWidget* widget = ctrl->widget;
     
     // Convert PCL alignment to Qt alignment
     Qt::Alignment qtAlign = Qt::AlignLeft | Qt::AlignTop;
@@ -2476,21 +2493,6 @@ void API_SpinBox_SetSpinBoxReadOnly(control_handle handle, api_bool readOnly)
     it->second->spinBox->setReadOnly(readOnly != 0);
 }
 
-// Helper to get or create MockControl for any widget
-static MockControl* GetOrCreateMockControl(control_handle handle) {
-    std::lock_guard<std::mutex> lock(g_control_map_mutex);
-    auto it = g_control_map.find(handle);
-    if (it != g_control_map.end()) {
-        return it->second;
-    }
-    
-    // Create new mock control for existing widget
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
-    MockControl* ctrl = new MockControl(widget);
-    g_control_map[handle] = ctrl;
-    return ctrl;
-}
-
 // ----------------------------------------------------------------------------
 // ControlContext API
 // ----------------------------------------------------------------------------
@@ -2664,7 +2666,8 @@ void API_Control_SetControlMinSize(control_handle handle, int32 w, int32 h)
     
     if (!handle) return;
 
-    QWidget* widget = reinterpret_cast<QWidget*>(handle);
+    MockControl* ctrl = GetOrCreateMockControl(handle);
+    QWidget* widget = ctrl->widget;
     int W = SanitizeSize(w);
     int H = SanitizeSize(h);
     
@@ -4792,11 +4795,6 @@ struct MockView {
 static std::map<const_view_handle, MockView*> g_view_map;
 static std::mutex g_view_map_mutex;
 
-
-// Global maps already provided:
-extern std::map<control_handle, MockControl*> g_control_map;
-extern std::mutex g_control_map_mutex;
-
 // -----------------------------------------------------------------------------
 // TreeBox Mock API
 // -----------------------------------------------------------------------------
@@ -4836,10 +4834,6 @@ struct MockTreeBox : MockControl
             delete n;
     }
 };
-
-// These should already exist in your file:
-extern std::map<control_handle, MockControl*> g_control_map;
-extern std::mutex g_control_map_mutex;
 
 // Small helper – avoids dynamic_cast on non-polymorphic MockControl.
 static MockTreeBox* GetTreeBox( control_handle h )
@@ -10220,7 +10214,7 @@ control_handle API_Control_GetChildByPos(const_control_handle, int32, int32)
    void           (API_Control_SetControlUpdatesEnabled)( control_handle, api_bool )
    {
 
-     abort();
+     //     abort();
    }
 
    void           (API_Control_UpdateControlRect)( control_handle, int32, int32, int32, int32 )
@@ -11240,18 +11234,21 @@ api_bool API_Edit_SetReturnPressedEventRoutine(
     auto it = g_edit_map.find(handle);
     if (it == g_edit_map.end()) return api_false;
 
-    MockEdit* edit = it->second;
-    edit->returnPressedHandler  = routine;
-    edit->returnPressedReceiver = receiver;
+    MockEdit* mockEdit = it->second;
+    mockEdit->returnPressedHandler  = routine;
+    mockEdit->returnPressedReceiver = receiver;
 
-    QLineEdit* w = edit->edit;
+    QLineEdit* w = mockEdit->edit;
     // Do NOT disconnect all events; combine them
     if (routine)
         QObject::connect(w, &QLineEdit::returnPressed,
-            [edit, w]() {
-                if (edit->returnPressedHandler && edit->returnPressedReceiver) {
-                    control_handle h = reinterpret_cast<control_handle>(w);
-                    edit->returnPressedHandler(reinterpret_cast<api_handle>(g_activeInterface), h);
+            [mockEdit]() {
+                if (mockEdit->pclEdit && mockEdit->returnPressedHandler && mockEdit->editCompletedReceiver) {
+		    control_handle hSender =
+			reinterpret_cast<control_handle>(mockEdit->pclEdit);              // pcl::Edit*
+		    control_handle hReceiver =
+			reinterpret_cast<control_handle>(mockEdit->editCompletedReceiver); // pcl::Control*
+                    mockEdit->returnPressedHandler(hSender, hReceiver);
                 }
             });
 
@@ -11978,8 +11975,10 @@ api_handle API_TreeBox_CreateTreeBoxNode(api_handle, api_handle nodeClient)
 int32 API_TreeBox_GetTreeBoxChildCount(const_control_handle)
 {
 
-  abort();
+  //  abort();
+  return 1;
 }
+  
 api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
 {
   // returns client handle
@@ -11989,7 +11988,8 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    int32          (API_TreeBox_GetTreeBoxChildIndex)( const_control_handle, const_api_handle )
    {
 
-     abort();
+     //   abort();
+     return 0;
    }
 
    void           (API_TreeBox_InsertTreeBoxNode)( control_handle, int32, api_handle )
@@ -12006,7 +12006,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_ClearTreeBox)( control_handle )
    {
 
-     abort();
+     //     abort();
    }
 
    api_bool       (API_TreeBox_GetTreeBoxUniformRowHeightEnabled)( const_control_handle )
@@ -12020,11 +12020,34 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
      abort();
    }
 
-   api_handle     (API_TreeBox_GetTreeBoxCurrentNode)( const_control_handle )
-   {
-     // returns client handle
-     abort();
-   }
+api_handle API_TreeBox_GetTreeBoxCurrentNode(const_control_handle handle)
+{
+    std::lock_guard<std::mutex> lock(g_control_map_mutex);
+
+    auto it = g_control_map.find(handle);
+    if (it == g_control_map.end())
+        return nullptr;
+
+    MockTreeBox* mock = (MockTreeBox *)(it->second);
+    if (!mock->widget)
+        return nullptr;
+    /*
+    QTreeWidgetItem* item = mock->widget->currentItem();
+    if (!item)
+        return nullptr;
+
+    auto it2 = mock->nodeMap.find(item);
+    if (it2 == mock->nodeMap.end())
+        return nullptr;
+
+    pcl::TreeBox::Node* node = it2->second;
+
+    return reinterpret_cast<api_handle>(node);
+    */
+    return reinterpret_cast<api_handle>(mock->widget);
+    
+}
+
    void           (API_TreeBox_SetTreeBoxCurrentNode)( control_handle, api_handle )
    {
 
@@ -12039,7 +12062,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxMultipleNodeSelectionEnabled)( control_handle, api_bool )
    {
 
-     abort();
+     //     abort();
    }
 
    api_bool       (API_TreeBox_GetTreeBoxSelectedNodes)( const_control_handle, api_handle*, size_type* )
@@ -12097,7 +12120,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxColumnCount)( control_handle, int32 )
    {
 
-     abort();
+     //     abort();
    }
 
    api_bool       (API_TreeBox_GetTreeBoxColumnVisible)( const_control_handle, int32 )
@@ -12108,7 +12131,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxColumnVisible)( control_handle, int32, api_bool )
    {
 
-     abort();
+     //  abort();
    }
 
    int32          (API_TreeBox_GetTreeBoxColumnWidth)( const_control_handle, int32 )
@@ -12119,13 +12142,13 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxColumnWidth)( control_handle, int32, int32 )
    {
 
-     abort();
+     //     abort();
    }
 
    void           (API_TreeBox_AdjustTreeBoxColumnWidthToContents)( control_handle, int32 )
    {
 
-     abort();
+     //     abort();
    }
 
    api_bool       (API_TreeBox_GetTreeBoxHeaderText)( const_control_handle, int32, char16_type*, size_type* )
@@ -12136,7 +12159,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxHeaderText)( control_handle, int32, const char16_type* )
    {
 
-     abort();
+     //    abort();
    }
 
    bitmap_handle  (API_TreeBox_GetTreeBoxHeaderIcon)( const_control_handle, int32 )
@@ -12147,7 +12170,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxHeaderIcon)( control_handle, int32, const_bitmap_handle )
    {
 
-     abort();
+     //    abort();
    }
 
    int32          (API_TreeBox_GetTreeBoxHeaderAlignment)( const_control_handle, int32 )
@@ -12158,7 +12181,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxHeaderAlignment)( control_handle, int32, int32 )
    {
 
-     abort();
+     //    abort();
    }
 
    api_bool       (API_TreeBox_GetTreeBoxHeaderVisible)( const_control_handle )
@@ -12169,7 +12192,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxHeaderVisible)( control_handle, api_bool )
    {
 
-     abort();
+     //     abort();
    }
 
    int32          (API_TreeBox_GetTreeBoxIndentSize)( const_control_handle )
@@ -12180,7 +12203,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxIndentSize)( control_handle, int32 )
    {
 
-     abort();
+     //   abort();
    }
 
    api_bool       (API_TreeBox_GetTreeBoxNodeExpansionEnabled)( const_control_handle )
@@ -12191,7 +12214,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxNodeExpansionEnabled)( control_handle, api_bool )
    {
 
-     abort();
+     //    abort();
    }
 
    api_bool       (API_TreeBox_GetTreeBoxRootDecorationEnabled)( const_control_handle )
@@ -12202,7 +12225,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxRootDecorationEnabled)( control_handle, api_bool )
    {
 
-     abort();
+     //     abort();
    }
 
    api_bool       (API_TreeBox_GetTreeBoxAlternateRowColorEnabled)( const_control_handle )
@@ -12213,7 +12236,7 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    void           (API_TreeBox_SetTreeBoxAlternateRowColorEnabled)( control_handle, api_bool )
    {
 
-     abort();
+     //     abort();
    }
 
    void           (API_TreeBox_GetTreeBoxIconSize)( const_control_handle, int32*, int32* )
@@ -12462,47 +12485,56 @@ api_handle API_TreeBox_GetTreeBoxChild(const_control_handle, int32 idx)
    api_bool       (API_TreeBox_SetTreeBoxCurrentNodeUpdatedEventRoutine)( control_handle, api_handle, pcl::item_range_event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
    api_bool       (API_TreeBox_SetTreeBoxNodeActivatedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
    api_bool       (API_TreeBox_SetTreeBoxNodeUpdatedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
    api_bool       (API_TreeBox_SetTreeBoxNodeEnteredEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
    api_bool       (API_TreeBox_SetTreeBoxNodeClickedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
    api_bool       (API_TreeBox_SetTreeBoxNodeDoubleClickedEventRoutine)( control_handle, api_handle, pcl::item_value_event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
    api_bool       (API_TreeBox_SetTreeBoxNodeExpandedEventRoutine)( control_handle, api_handle, pcl::item_event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
    api_bool       (API_TreeBox_SetTreeBoxNodeCollapsedEventRoutine)( control_handle, api_handle, pcl::item_event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
    api_bool       (API_TreeBox_SetTreeBoxNodeSelectionUpdatedEventRoutine)( control_handle, api_handle, pcl::event_routine )
    {
 
-     abort();
+     //     abort();
+     return api_true;
    }
 
 // ----------------------------------------------------------------------------
