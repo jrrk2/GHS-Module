@@ -120,8 +120,6 @@ extern "C" {
   
 };
 
-extern pcl::ProcessInterface* g_activeInterface;
-
 // SpinBox event handler typedef
 namespace pcl {
     typedef void (*spinbox_value_event_routine)(void* receiver, control_handle sender, int32 value);

@@ -49,6 +49,7 @@
 #include <fftw3.h>
 #include <mutex>
 #include <map>
+#include <sstream>
 #include <pcl/StandardAllocator.h>
 #include <pcl/Complex.h> // For dcomplex
 #include <cstring> // For memcpy
@@ -1184,6 +1185,24 @@ static std::mutex g_function_map_mutex;
 static std::map<image_handle, MockImage*> g_image_map;
 static std::mutex g_image_map_mutex;
 static thread_local bool g_constructing_gui = true;
+
+static std::string PtrToString(const void* p)
+{
+    std::ostringstream oss;
+    oss << p;
+    return oss.str();
+}
+
+static std::string PtrToHex(const void* p)
+{
+    if (!p)
+        return "0x0";
+
+    std::ostringstream oss;
+    oss << "0x" << std::hex << std::uppercase
+        << reinterpret_cast<uintptr_t>(p);
+    return oss.str();
+}
 
 // Create a stub function for missing functions
 // We'll use a simple global function that just returns nullptr
@@ -2548,7 +2567,7 @@ api_bool API_SpinBox_SetSpinBoxValueUpdatedEventRoutine(
             {
                 control_handle spinHandle =
                     reinterpret_cast<control_handle>(mockSpin->spinBox);
-                mockSpin->valueHandler(reinterpret_cast<api_handle>(g_activeInterface), spinHandle, value);
+                mockSpin->valueHandler(mockSpin->valueReceiver, spinHandle, value);
             }
         });
     
@@ -2677,42 +2696,31 @@ static inline int SanitizeSize(int v)
     return (v < 0) ? 0 : v;   // or 1, but 0 is accepted and means "no min"
 }
 
-control_handle API_Control_CreateControl(api_handle hModule,
-                                         api_handle client,
-                                         control_handle parent,
-                                         uint32 flags)
+control_handle API_Control_CreateControl(api_handle hModule, api_handle client,
+                                         control_handle parent, uint32 flags)
 {
     LogDebug("CreateControl called");
 
-    // Allocate a new MockControl object
     MockControl* ctrl = new MockControl();
     ctrl->clientHandle = client;
-    ctrl->flags = flags;
 
-    // Parent relationship
+    QWidget* w = ctrl->widget;
+
     if (parent) {
-        MockControl* parentCtrl = reinterpret_cast<MockControl*>(parent);
-        ctrl->widget->setParent(parentCtrl->widget);   // <- QWidget parent
-        ctrl->parent = nullptr;                        // <- TreeBox only
-    } else {
-        //
-        // Important: This becomes a top-level window.
-        //
-        ctrl->widget->setWindowFlags(Qt::Window);
+        QWidget* parentWidget = reinterpret_cast<QWidget*>(parent);
+        w->setParent(parentWidget);
     }
 
-    // Create stable handle
-    control_handle handle = reinterpret_cast<control_handle>(ctrl);
+    control_handle handle = reinterpret_cast<control_handle>(ctrl);  // <-- FIX HERE
 
     {
         std::lock_guard<std::mutex> lock(g_control_map_mutex);
-        g_control_map[handle] = ctrl;
+        g_control_map[handle] = ctrl;  // Still store metadata keyed by widget ptr
     }
 
-    // Remember the last created top-level control
     if (!parent)
-        g_lastTopLevelControl = handle;
-    
+        LogDebug("  TOP LEVEL");
+
     return handle;
 }
 
@@ -11436,7 +11444,7 @@ api_bool API_Edit_SetTextUpdatedEventRoutine(
                 if (edit->textUpdatedHandler && edit->textUpdatedReceiver) {
                     control_handle h = reinterpret_cast<control_handle>(w);
                     std::u16string u16 = qs.toStdU16String();
-                    edit->textUpdatedHandler(reinterpret_cast<api_handle>(g_activeInterface),
+                    edit->textUpdatedHandler(edit->textUpdatedReceiver,
                                              h,
                                              reinterpret_cast<const char16_type*>(u16.c_str()));
                 }
@@ -11467,7 +11475,7 @@ api_bool API_Edit_SetCaretPositionUpdatedEventRoutine(
             [edit, w](int oldPos, int newPos) {
                 if (edit->caretPositionUpdatedHandler && edit->caretPositionUpdatedReceiver) {
                     control_handle h = reinterpret_cast<control_handle>(w);
-                    edit->caretPositionUpdatedHandler(reinterpret_cast<api_handle>(g_activeInterface),
+                    edit->caretPositionUpdatedHandler(edit->caretPositionUpdatedReceiver,
                                                       h,
                                                       oldPos,
                                                       newPos);
@@ -11501,7 +11509,7 @@ api_bool API_Edit_SetSelectionUpdatedEventRoutine(
                     control_handle h = reinterpret_cast<control_handle>(w);
                     int start = w->selectionStart();
                     int len   = w->selectedText().length();
-                    edit->selectionUpdatedHandler(reinterpret_cast<api_handle>(g_activeInterface),
+                    edit->selectionUpdatedHandler(edit->selectionUpdatedReceiver,
                                                   h,
                                                   start,
                                                   start + len);
