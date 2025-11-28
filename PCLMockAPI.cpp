@@ -4998,34 +4998,27 @@ api_bool API_SharedImage_SetImageRGBWS(image_handle, const api_RGBWS*)
   abort();
 }
 
-api_bool API_Control_GetClientRect(const_control_handle handle,
+api_bool API_Control_GetClientRect(control_handle h,
                                    int32* x, int32* y,
                                    int32* w, int32* hgt)
 {
-  /*    if (!w || !hgt) return api_false;
-    
-    MockControl* wdg = GetControlBox(handle);
-    if (wdg) {
-    QRect r = wdg->widget->contentsRect();
+    if (!w || !hgt)
+        return api_false;
 
-      if (x) *x = r.x();
-      if (y) *y = r.y();
-      *w   = r.width();
-      *hgt = r.height();
+    auto* C = get(h);              // whatever you use elsewhere: get(control_handle)
+    if (!C || !C->widget)
+        return api_false;
 
-      return api_true;
+    const QRect r = C->widget->contentsRect();
 
-    }
-  */
-    // Return a harmless safe rect
-    if (x) *x = 0;
-    if (y) *y = 0;
-    *w   = 0;
-    *hgt = 0;
+    if (x)   *x   = r.x();
+    if (y)   *y   = r.y();
+    *w   = r.width();
+    *hgt = r.height();
+
     return api_true;
-
 }
-  
+
 void API_Bitmap_CloneBitmap() { abort(); }
 void API_Bitmap_CreateBitmapFromData() { abort(); }
 void API_Bitmap_CreateBitmapFromFile() { abort(); }
