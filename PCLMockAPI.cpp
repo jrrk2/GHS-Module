@@ -50,7 +50,10 @@
 #define label_handle control_handle
 #define slider_handle control_handle
 #define treebox_handle control_handle
-#define combo_box_handle control_handle
+#define combo_handle control_handle
+#define spin_handle control_handle
+
+typedef void *ui_handle;
 
 //---------------------------------------------------------------------
 // Logging helpers
@@ -99,13 +102,261 @@ struct MockBase
 //---------------------------------------------------------------------
 // Mock widgets
 //---------------------------------------------------------------------
+// revised createXXX
+#if 0
+#else
+struct MockControl {
+  QWidget* widget;
+  QString uiObjectId; 
 
+};
+struct MockLabel {
+    QLabel* widget;
+};
+struct MockEdit {
+    QLineEdit* widget;
+};
+struct MockSlider {
+    QSlider* widget;
+};
+struct MockCheckBox {
+    QCheckBox* widget;
+};
+struct MockCombo {
+    QComboBox* widget;
+};
+
+struct MockScrollBox
+{
+   QScrollArea* scroll  = nullptr;
+   QWidget*     viewport = nullptr;
+  void *scrollArea;
+};
+
+struct MockSpin {
+    QSpinBox* widget;
+};
+struct MockSizer {
+    bool vertical;
+    QLayout *layout;
+    std::vector<api_handle> items;
+};
+struct MockButton
+{
+   QPushButton* button = nullptr;
+   bool isCheckBox;
+};
+
+struct MockRadio
+{
+   QRadioButton* button = nullptr;
+  bool checkable, isToolButton;
+};
+
+struct MockTreeBox
+{
+   QTreeWidget* tree = nullptr;
+};
+
+struct MockBitmap
+{
+   QPixmap pixmap;
+};
+
+struct MockFont
+{
+   QFont font;
+};
+
+struct PtrHash {
+    size_t operator()(const void* p) const noexcept {
+        return reinterpret_cast<uintptr_t>(p) >> 3;  // stable, simple, ABI-safe
+    }
+};
+
+struct PtrEq {
+    bool operator()(const void* a, const void* b) const noexcept {
+        return a == b;
+    }
+};
+
+//---------------------------------------------------------------------
+// Global maps: handle -> mock objects
+//---------------------------------------------------------------------
+
+// --- GLOBAL REGISTRY OF ALL MOCK OBJECT TYPES ------------------------------
+
+static std::unordered_map<control_handle, std::unique_ptr<MockControl>> g_controls;
+static std::unordered_map<label_handle,   std::unique_ptr<MockLabel>>   g_labels;
+static std::unordered_map<edit_handle,    std::unique_ptr<MockEdit>>    g_edits;
+static std::unordered_map<button_handle,  std::unique_ptr<MockCheckBox>> g_buttons;
+static std::unordered_map<slider_handle,  std::unique_ptr<MockSlider>>  g_sliders;
+static std::unordered_map<combo_handle,   std::unique_ptr<MockCombo>>   g_combos;
+static std::unordered_map<spin_handle,    std::unique_ptr<MockSpin>>    g_spins;
+static std::unordered_map<sizer_handle,   std::unique_ptr<MockSizer>>   g_sizers;
+
+// Remember last exposed top-level widget
+static QWidget* g_lastTopLevelWidget = nullptr;
+
+static QWidget* lookupWidget( ui_handle h )
+{
+    if (!h)
+        return nullptr;
+
+    // Try control
+    if (auto it = g_controls.find(h); it != g_controls.end())
+        return it->second->widget;
+
+    if (auto it = g_labels.find(h); it != g_labels.end())
+        return it->second->widget;
+
+    if (auto it = g_edits.find(h); it != g_edits.end())
+        return it->second->widget;
+
+    if (auto it = g_buttons.find(h); it != g_buttons.end())
+        return it->second->widget;
+
+    if (auto it = g_sliders.find(h); it != g_sliders.end())
+        return it->second->widget;
+
+    if (auto it = g_combos.find(h); it != g_combos.end())
+        return it->second->widget;
+
+    if (auto it = g_spins.find(h); it != g_spins.end())
+        return it->second->widget;
+
+    // NO widget found for this handle
+    return nullptr;
+}
+
+ control_handle API_Control_CreateControl(api_handle h)
+{
+    auto* c = new MockControl();
+    c->widget = new QWidget();
+
+    control_handle handle = (control_handle)c;
+
+    g_controls[handle] = std::unique_ptr<MockControl>(c);
+
+    g_lastTopLevelWidget = c->widget;
+
+    fprintf(stderr, "[PCLMockAPI] API_Control_CreateControl: handle=%p widget=%p\n",
+            handle, c->widget);
+
+    return handle;
+}
+
+ label_handle API_Label_CreateLabel(api_handle h, control_handle parent)
+{
+    auto* l = new MockLabel();
+    QWidget* parentWidget = lookupWidget(parent);
+
+    l->widget = new QLabel(parentWidget);
+
+    label_handle handle = (label_handle)l;
+
+    g_labels[handle] = std::unique_ptr<MockLabel>(l);
+
+    fprintf(stderr, "[PCLMockAPI] API_Label_CreateLabel: handle=%p widget=%p parent=%p\n",
+            handle, l->widget, parentWidget);
+
+    return handle;
+}
+
+ edit_handle API_Edit_CreateEdit(api_handle h, control_handle parent)
+{
+    auto* e = new MockEdit();
+    QWidget* p = lookupWidget(parent);
+    e->widget = new QLineEdit(p);
+
+    edit_handle handle = (edit_handle)e;
+
+    g_edits[handle] = std::unique_ptr<MockEdit>(e);
+
+    fprintf(stderr, "[PCLMockAPI] API_Edit_CreateEdit: handle=%p widget=%p parent=%p\n",
+            handle, e->widget, p);
+
+    return handle;
+}
+
+ slider_handle API_Slider_CreateSlider(api_handle h, control_handle parent)
+{
+    auto* s = new MockSlider();
+    QWidget* p = lookupWidget(parent);
+    s->widget = new QSlider(Qt::Horizontal, p);
+
+    slider_handle handle = (slider_handle)s;
+    g_sliders[handle] = std::unique_ptr<MockSlider>(s);
+
+    fprintf(stderr, "[PCLMockAPI] API_Slider_CreateSlider: handle=%p widget=%p parent=%p\n",
+            handle, s->widget, p);
+
+    return handle;
+}
+
+ button_handle API_Button_CreateCheckBox(api_handle h, control_handle parent)
+{
+    auto* c = new MockCheckBox();
+    QWidget* p = lookupWidget(parent);
+    c->widget = new QCheckBox(p);
+
+    button_handle handle = (button_handle)c;
+    g_buttons[handle] = std::unique_ptr<MockCheckBox>(c);
+
+    fprintf(stderr, "[PCLMockAPI] API_Button_CreateCheckBox: handle=%p widget=%p\n",
+            handle, c->widget);
+
+    return handle;
+}
+
+ combo_handle API_ComboBox_CreateComboBox(api_handle h, control_handle parent)
+{
+    auto* c = new MockCombo();
+    QWidget* p = lookupWidget(parent);
+    c->widget = new QComboBox(p);
+
+    combo_handle handle = (combo_handle)c;
+    g_combos[handle] = std::unique_ptr<MockCombo>(c);
+
+    fprintf(stderr, "[PCLMockAPI] API_ComboBox_CreateComboBox: handle=%p widget=%p\n",
+            handle, c->widget);
+
+    return handle;
+}
+
+ spin_handle API_SpinBox_CreateSpinBox(api_handle h, control_handle parent)
+{
+    auto* s = new MockSpin();
+    QWidget* p = lookupWidget(parent);
+    s->widget = new QSpinBox(p);
+
+    spin_handle handle = (spin_handle)s;
+    g_spins[handle] = std::unique_ptr<MockSpin>(s);
+
+    fprintf(stderr, "[PCLMockAPI] API_SpinBox_CreateSpinBox: handle=%p widget=%p\n",
+            handle, s->widget);
+
+    return handle;
+}
+ int API_UI_GetUIObjectRefCount(api_handle h)
+{
+    int n = g_controls.size() + g_labels.size() + g_edits.size() +
+            g_buttons.size() + g_sliders.size() + g_combos.size() +
+            g_spins.size() + g_sizers.size();
+
+    fprintf(stderr, "[PCLMockAPI] API_UI_GetUIObjectRefCount = %d\n", n);
+    return n;
+}
+
+#endif
+
+/*
 struct MockControl : public MockBase
 {
    QWidget*   widget      = nullptr;
    QString    uiObjectId;
    uint32     flags = 0;
-  
+   void*      parentHandle;
    MockControl() = default;
    explicit MockControl( QWidget* w ) : widget( w ) {}
 };
@@ -114,6 +365,8 @@ struct MockSizer : public MockBase
 {
    QBoxLayout* layout  = nullptr;
    bool        vertical = true;
+   void*      parentHandle;
+   uint32     flags = 0;
 
    explicit MockSizer( bool v ) : vertical( v )
    {
@@ -132,6 +385,7 @@ struct MockLabel : public MockBase
 struct MockButton : public MockBase
 {
    QPushButton* button = nullptr;
+   bool isCheckBox;
    explicit MockButton( QPushButton* b ) : button( b ) {}
 };
 
@@ -140,6 +394,12 @@ struct MockCheckBox : public MockBase
    QCheckBox* box = nullptr;
    bool checkable;
    explicit MockCheckBox( QCheckBox* b ) : box( b ) {}
+};
+
+struct MockComboBox : public MockBase
+{
+   QComboBox* box = nullptr;
+   explicit MockComboBox( QComboBox* b ) : box( b ) {}
 };
 
 struct MockRadio : public MockBase
@@ -166,75 +426,7 @@ struct MockTreeBox : public MockBase
    QTreeWidget* tree = nullptr;
    explicit MockTreeBox( QTreeWidget* t ) : tree( t ) {}
 };
-
-struct MockScrollBox : public MockBase
-{
-   QScrollArea* scroll  = nullptr;
-   QWidget*     viewport = nullptr;
-};
-
-struct MockFont : public MockBase
-{
-   QFont font;
-};
-
-struct MockBitmap : public MockBase
-{
-   QPixmap pixmap;
-};
-
-struct PtrHash {
-    size_t operator()(const void* p) const noexcept {
-        return reinterpret_cast<uintptr_t>(p) >> 3;  // stable, simple, ABI-safe
-    }
-};
-
-struct PtrEq {
-    bool operator()(const void* a, const void* b) const noexcept {
-        return a == b;
-    }
-};
-
-//---------------------------------------------------------------------
-// Global maps: handle -> mock objects
-//---------------------------------------------------------------------
-
-static std::unordered_map< control_handle, MockControl*, PtrHash, PtrEq > g_control_map;
-static std::mutex                                         g_control_map_mutex;
-
-static std::unordered_map< sizer_handle, MockSizer*, PtrHash, PtrEq >     g_sizer_map;
-static std::mutex                                         g_sizer_map_mutex;
-
-static std::unordered_map< label_handle, MockLabel*, PtrHash, PtrEq >     g_label_map;
-static std::mutex                                         g_label_map_mutex;
-
-static std::unordered_map< button_handle, MockButton*, PtrHash, PtrEq >   g_button_map;
-static std::mutex                                         g_button_map_mutex;
-
-static std::unordered_map< control_handle, MockCheckBox*, PtrHash, PtrEq > g_checkbox_map;
-static std::mutex                                          g_checkbox_map_mutex;
-
-static std::unordered_map< control_handle, MockRadio*, PtrHash, PtrEq > g_radio_map;
-static std::mutex                                          g_radio_map_mutex;
-
-static std::unordered_map< edit_handle, MockEdit*, PtrHash, PtrEq >       g_edit_map;
-static std::mutex                                         g_edit_map_mutex;
-
-static std::unordered_map< slider_handle, MockSlider*, PtrHash, PtrEq >   g_slider_map;
-static std::mutex                                         g_slider_map_mutex;
-
-static std::unordered_map< treebox_handle, MockTreeBox*, PtrHash, PtrEq > g_treebox_map;
-static std::mutex                                         g_treebox_map_mutex;
-
-static std::unordered_map< bitmap_handle, MockBitmap*, PtrHash, PtrEq >   g_bitmap_map;
-static std::mutex                                         g_bitmap_map_mutex;
-
-static std::unordered_map< font_handle, MockFont*, PtrHash, PtrEq >       g_font_map;
-static std::mutex                                         g_font_map_mutex;
-
-// For “which QWidget belongs to this handle?”
-static std::map< void*, QWidget* >                        g_widget_map;
-static std::mutex                                         g_widget_map_mutex;
+*/
 
 // Last created top-level control for null-handle Show()
 static MockControl* g_lastTopLevelControl = nullptr;
@@ -262,7 +454,7 @@ static inline bool IsNullOrInvalidControl(api_handle h)
         return true;
 
     // If the handle does not exist in our map, treat it as null
-    if (g_control_map.find(h) == g_control_map.end())
+    if (g_controls.find(h) == g_controls.end())
         return true;
 
     return false;
@@ -272,11 +464,11 @@ static inline bool IsNullOrInvalidControl(api_handle h)
 // or nullptr if invalid.
 static QWidget* GetWidgetForControl( control_handle h )
 {
-    auto it = g_control_map.find( h );
-    if ( it == g_control_map.end() )
+    auto it = g_controls.find( h );
+    if ( it == g_controls.end() )
         return nullptr;
 
-    MockControl* mc = it->second;
+    MockControl *mc = it->second.get();
     if ( mc == nullptr )
         return nullptr;
 
@@ -288,7 +480,7 @@ static QWidget* GetWidgetForControl( control_handle h )
 //---------------------------------------------------------------------
 
 template <class T, class Handle, class Map>
-static T* Lookup( Map& m, std::mutex& mtx, Handle h, const char* context )
+static T* Lookup( Map& m, Handle h, const char* context )
 {
    if ( h == nullptr )
    {
@@ -296,7 +488,6 @@ static T* Lookup( Map& m, std::mutex& mtx, Handle h, const char* context )
       return nullptr;
    }
 
-   std::lock_guard<std::mutex> lock( mtx );
    auto it = m.find( h );
    if ( it == m.end() )
    {
@@ -305,7 +496,7 @@ static T* Lookup( Map& m, std::mutex& mtx, Handle h, const char* context )
                   .arg( PtrToHex( h ) ) );
       return nullptr;
    }
-   return it->second;
+   return it->second.get();
 }
 
 static void RegisterWidget( void* handle, QWidget* w, const char* context )
@@ -313,30 +504,12 @@ static void RegisterWidget( void* handle, QWidget* w, const char* context )
    if ( !handle || !w )
       return;
 
-   std::lock_guard<std::mutex> lock( g_widget_map_mutex );
-   g_widget_map[ handle ] = w;
+   g_widgets[ handle ] = w;
 
    LogDebug( QString( "[PCLMockAPI] %1: registered widget %2 for handle=%3" )
              .arg( context )
              .arg( PtrToHex( w ) )
              .arg( PtrToHex( handle ) ) );
-}
-
-static QWidget* WidgetFromHandle( void* handle, const char* context )
-{
-   if ( !handle )
-      return nullptr;
-
-   std::lock_guard<std::mutex> lock( g_widget_map_mutex );
-   auto it = g_widget_map.find( handle );
-   if ( it == g_widget_map.end() )
-   {
-      LogWarning( QString( "[PCLMockAPI] %1: no QWidget registered for handle=%2" )
-                  .arg( context )
-                  .arg( PtrToHex( handle ) ) );
-      return nullptr;
-   }
-   return it->second;
 }
 
 // Existing helper – you should already have something like this:
@@ -348,18 +521,17 @@ static MockControl* GetControlFromHandle( control_handle handle, const char* whe
         return nullptr;
     }
 
-    std::lock_guard<std::mutex> lock( g_control_map_mutex );
-    auto it = g_control_map.find( handle );
-    if ( it == g_control_map.end() )
+    auto it = g_controls.find( handle );
+    if ( it == g_controls.end() )
     {
       LogWarning( QString("%1: unknown control handle %2").arg(where).arg(PtrToHex( handle )) );
         return nullptr;
     }
-    return it->second;
+    return it->second.get();
 }
 
 // New helper just for combo boxes:
-static QComboBox* GetComboBoxFromHandle( combo_box_handle handle, const char* where )
+static QComboBox* GetComboBoxFromHandle( combo_handle handle, const char* where )
 {
     MockControl* ctrl = GetControlFromHandle( handle, where );
     if ( !ctrl )
@@ -429,13 +601,11 @@ control_handle API_Control_CreateControl(api_handle module, api_handle client,
     control_handle handle = reinterpret_cast<control_handle>(ctrl);
 
     {
-        std::lock_guard<std::mutex> lock(g_control_map_mutex);
-        g_control_map[handle] = ctrl;
+        g_controls[handle] = ctrl;
     }
 
     return handle;
 }  
-  */
 
 control_handle API_Control_CreateControl( api_handle module,
                                           api_handle parent,
@@ -448,7 +618,7 @@ control_handle API_Control_CreateControl( api_handle module,
 
     if (!IsNullOrInvalidControl(parent))
     {
-        parentWidget = g_control_map[parent]->widget;   // safe
+        parentWidget = g_controls[parent]->widget;   // safe
     }
 
     QWidget* w = new QWidget(parentWidget);
@@ -456,10 +626,11 @@ control_handle API_Control_CreateControl( api_handle module,
 
     control_handle h = reinterpret_cast<control_handle>(mock);
 
-    g_control_map[h] = mock;
+    g_controls[h] = mock;
 
     return h;
 }
+  */
 
 void API_Control_DestroyControl( control_handle handle, api_handle client )
 {
@@ -470,12 +641,11 @@ void API_Control_DestroyControl( control_handle handle, api_handle client )
 
    MockControl* ctrl = nullptr;
    {
-      std::lock_guard<std::mutex> lock( g_control_map_mutex );
-      auto it = g_control_map.find( handle );
-      if ( it != g_control_map.end() )
+      auto it = g_controls.find( handle );
+      if ( it != g_controls.end() )
       {
-         ctrl = it->second;
-         g_control_map.erase( it );
+	ctrl = it->second.get();
+         g_controls.erase( it );
       }
    }
 
@@ -488,8 +658,7 @@ void API_Control_DestroyControl( control_handle handle, api_handle client )
    }
 
    {
-      std::lock_guard<std::mutex> lock( g_widget_map_mutex );
-      g_widget_map.erase( handle );
+      g_widgets.erase( handle );
    }
 }
 
@@ -507,7 +676,7 @@ api_bool API_Control_SetControlVisible( control_handle handle,
 
    if ( handle != nullptr )
    {
-      ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+      ctrl = Lookup<MockControl>( g_controls,
                                   handle, "API_Control_SetControlVisible" );
    }
    else
@@ -550,7 +719,7 @@ api_bool API_Control_SetControlFixedSize( control_handle handle,
 {
    Q_UNUSED( client );
 
-   MockControl* ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* ctrl = Lookup<MockControl>( g_controls,
                                             handle, "API_Control_SetControlFixedSize" );
    if ( !ctrl || !ctrl->widget )
       return api_false;
@@ -565,7 +734,7 @@ api_bool API_Control_SetControlMinSize( control_handle handle,
 {
    Q_UNUSED( client );
 
-   MockControl* ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* ctrl = Lookup<MockControl>( g_controls,
                                             handle, "API_Control_SetControlMinSize" );
    if ( !ctrl || !ctrl->widget )
       return api_false;
@@ -580,7 +749,7 @@ api_bool API_Control_SetControlPosition( control_handle handle,
 {
    Q_UNUSED( client );
 
-   MockControl* ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* ctrl = Lookup<MockControl>( g_controls,
                                             handle, "API_Control_SetControlPosition" );
    if ( !ctrl || !ctrl->widget )
       return api_false;
@@ -595,7 +764,7 @@ api_bool API_Control_SetControlEnabled( control_handle handle,
 {
    Q_UNUSED( client );
 
-   MockControl* ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* ctrl = Lookup<MockControl>( g_controls,
                                             handle, "API_Control_SetControlEnabled" );
    if ( !ctrl || !ctrl->widget )
       return api_false;
@@ -624,7 +793,7 @@ api_bool API_Control_SetUIObjectId( control_handle handle,
 {
    Q_UNUSED( client );
 
-   MockControl* ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* ctrl = Lookup<MockControl>( g_controls,
                                             handle, "API_Control_SetUIObjectId" );
    if ( !ctrl )
       return api_false;
@@ -659,7 +828,7 @@ api_bool API_Control_SetChildControlToFocus( control_handle parent,
 {
    Q_UNUSED( client );
 
-   MockControl* childCtrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* childCtrl = Lookup<MockControl>( g_controls,
                                                  child, "API_Control_SetChildControlToFocus" );
    if ( !childCtrl || !childCtrl->widget )
       return api_false;
@@ -672,6 +841,7 @@ api_bool API_Control_SetChildControlToFocus( control_handle parent,
 // Sizer API
 //---------------------------------------------------------------------
 
+/*
 sizer_handle API_Sizer_CreateSizer( api_handle module,
                                     api_handle client,
                                     api_bool vertical )
@@ -688,12 +858,12 @@ sizer_handle API_Sizer_CreateSizer( api_handle module,
 
    sizer_handle handle = reinterpret_cast<sizer_handle>( s );
    {
-      std::lock_guard<std::mutex> lock( g_sizer_map_mutex );
-      g_sizer_map[ handle ] = s;
+      g_sizers[ handle ] = s;
    }
 
    return handle;
 }
+*/
 
 api_bool API_Control_SetControlSizer( control_handle control,
                                       api_handle client,
@@ -701,9 +871,9 @@ api_bool API_Control_SetControlSizer( control_handle control,
 {
    Q_UNUSED( client );
 
-   MockControl* ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* ctrl = Lookup<MockControl>( g_controls,
                                             control, "API_Control_SetControlSizer" );
-   MockSizer* siz = Lookup<MockSizer>( g_sizer_map, g_sizer_map_mutex,
+   MockSizer* siz = Lookup<MockSizer>( g_sizers,
                                        sizer, "API_Control_SetControlSizer" );
    if ( !ctrl || !ctrl->widget || !siz || !siz->layout )
       return api_false;
@@ -718,7 +888,7 @@ api_bool API_Sizer_InsertSizerSpacing( sizer_handle sizer,
 {
    Q_UNUSED( client );
 
-   MockSizer* siz = Lookup<MockSizer>( g_sizer_map, g_sizer_map_mutex,
+   MockSizer* siz = Lookup<MockSizer>( g_sizers,
                                        sizer, "API_Sizer_InsertSizerSpacing" );
    if ( !siz || !siz->layout )
       return api_false;
@@ -733,7 +903,7 @@ api_bool API_Sizer_InsertSizerStretch( sizer_handle sizer,
 {
    Q_UNUSED( client );
 
-   MockSizer* siz = Lookup<MockSizer>( g_sizer_map, g_sizer_map_mutex,
+   MockSizer* siz = Lookup<MockSizer>( g_sizers,
                                        sizer, "API_Sizer_InsertSizerStretch" );
    if ( !siz || !siz->layout )
       return api_false;
@@ -750,9 +920,9 @@ api_bool API_Sizer_InsertSizerControl( sizer_handle sizer,
 {
    Q_UNUSED( client );
 
-   MockSizer* siz = Lookup<MockSizer>( g_sizer_map, g_sizer_map_mutex,
+   MockSizer* siz = Lookup<MockSizer>( g_sizers,
                                        sizer, "API_Sizer_InsertSizerControl" );
-   MockControl* ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* ctrl = Lookup<MockControl>( g_controls,
                                             control, "API_Sizer_InsertSizerControl" );
    if ( !siz || !siz->layout || !ctrl || !ctrl->widget )
       return api_false;
@@ -772,9 +942,9 @@ api_bool API_Sizer_InsertSizer( sizer_handle parentSizer,
 {
    Q_UNUSED( client );
 
-   MockSizer* parent = Lookup<MockSizer>( g_sizer_map, g_sizer_map_mutex,
+   MockSizer* parent = Lookup<MockSizer>( g_sizers,
                                           parentSizer, "API_Sizer_InsertSizer" );
-   MockSizer* child  = Lookup<MockSizer>( g_sizer_map, g_sizer_map_mutex,
+   MockSizer* child  = Lookup<MockSizer>( g_sizers,
                                           childSizer, "API_Sizer_InsertSizer" );
    if ( !parent || !parent->layout || !child || !child->layout )
       return api_false;
@@ -796,7 +966,7 @@ api_bool API_Sizer_SetSizerMargin( sizer_handle sizer,
 {
    Q_UNUSED( client );
 
-   MockSizer* siz = Lookup<MockSizer>( g_sizer_map, g_sizer_map_mutex,
+   MockSizer* siz = Lookup<MockSizer>( g_sizers,
                                        sizer, "API_Sizer_SetSizerMargin" );
    if ( !siz || !siz->layout )
       return api_false;
@@ -811,7 +981,7 @@ api_bool API_Sizer_SetSizerSpacing( sizer_handle sizer,
 {
    Q_UNUSED( client );
 
-   MockSizer* siz = Lookup<MockSizer>( g_sizer_map, g_sizer_map_mutex,
+   MockSizer* siz = Lookup<MockSizer>( g_sizers,
                                        sizer, "API_Sizer_SetSizerSpacing" );
    if ( !siz || !siz->layout )
       return api_false;
@@ -823,7 +993,7 @@ api_bool API_Sizer_SetSizerSpacing( sizer_handle sizer,
 api_bool API_Sizer_GetSizerDisplayPixelRatio( sizer_handle sizer,
                                             double *r )
 {
-   MockSizer* siz = Lookup<MockSizer>( g_sizer_map, g_sizer_map_mutex,
+   MockSizer* siz = Lookup<MockSizer>( g_sizers,
                                        sizer, "API_Sizer_GetSizerDisplayPixelRatio" );
    if ( !siz || !siz->layout )
      {
@@ -849,6 +1019,7 @@ api_bool API_Sizer_GetSizerDisplayPixelRatio( sizer_handle sizer,
 // Label API
 //---------------------------------------------------------------------
 
+/*
 label_handle API_Label_CreateLabel( api_handle module,
                                     api_handle client,
                                     control_handle parent,
@@ -870,14 +1041,14 @@ label_handle API_Label_CreateLabel( api_handle module,
 
    label_handle handle = reinterpret_cast<label_handle>( lbl );
    {
-      std::lock_guard<std::mutex> lock( g_label_map_mutex );
-      g_label_map[ handle ] = lbl;
+      g_labels[ handle ] = lbl;
    }
    RegisterWidget( handle, qlabel, "API_Label_CreateLabel" );
 
    LogDebug( QString( "[PCLMockAPI] CreateLabel called" ) );
    return handle;
 }
+*/
 
 api_bool API_Label_SetLabelText( label_handle handle,
                                  api_handle client,
@@ -885,12 +1056,12 @@ api_bool API_Label_SetLabelText( label_handle handle,
 {
    Q_UNUSED( client );
 
-   MockLabel* lbl = Lookup<MockLabel>( g_label_map, g_label_map_mutex,
+   MockLabel* lbl = Lookup<MockLabel>( g_labels,
                                        handle, "API_Label_SetLabelText" );
-   if ( !lbl || !lbl->label )
+   if ( !lbl || !lbl->widget )
       return api_false;
 
-   lbl->label->setText( QString::fromUtf16( text ) );
+   lbl->widget->setText( QString::fromUtf16( text ) );
    return api_true;
 }
 
@@ -900,9 +1071,9 @@ api_bool API_Label_SetLabelTextAlignment( label_handle handle,
 {
    Q_UNUSED( client );
 
-   MockLabel* lbl = Lookup<MockLabel>( g_label_map, g_label_map_mutex,
+   MockLabel* lbl = Lookup<MockLabel>( g_labels,
                                        handle, "API_Label_SetLabelTextAlignment" );
-   if ( !lbl || !lbl->label )
+   if ( !lbl || !lbl->widget )
       return api_false;
 
    Qt::Alignment align = {};
@@ -913,7 +1084,7 @@ api_bool API_Label_SetLabelTextAlignment( label_handle handle,
    if ( alignment & 0x40 ) align |= Qt::AlignTop;
    if ( alignment & 0x80 ) align |= Qt::AlignBottom;
 
-   lbl->label->setAlignment( align );
+   lbl->widget->setAlignment( align );
    return api_true;
 }
 
@@ -921,6 +1092,7 @@ api_bool API_Label_SetLabelTextAlignment( label_handle handle,
 // Button / ToolButton / CheckBox API
 //---------------------------------------------------------------------
 
+/*
 control_handle API_ToolButton_CreateToolButton( api_handle module,
                                                 api_handle client,
                                                 control_handle parent )
@@ -938,8 +1110,7 @@ control_handle API_ToolButton_CreateToolButton( api_handle module,
 
    control_handle handle = reinterpret_cast<control_handle>( ctrl );
    {
-      std::lock_guard<std::mutex> lock( g_control_map_mutex );
-      g_control_map[ handle ] = ctrl;
+      g_controls[ handle ] = ctrl;
    }
    RegisterWidget( handle, tbtn, "API_ToolButton_CreateToolButton" );
 
@@ -967,10 +1138,8 @@ control_handle API_Button_CreatePushButton( api_handle module,
 
    control_handle handle = reinterpret_cast<control_handle>( ctrl );
    {
-      std::lock_guard<std::mutex> lock1( g_control_map_mutex );
-      g_control_map[ handle ] = ctrl;
-      std::lock_guard<std::mutex> lock2( g_button_map_mutex );
-      g_button_map[ handle ] = mockBtn;
+      g_controls[ handle ] = ctrl;
+      g_buttons[ handle ] = mockBtn;
    }
    RegisterWidget( handle, btn, "API_Button_CreatePushButton" );
 
@@ -998,14 +1167,13 @@ control_handle API_CheckBox_CreateCheckBox( api_handle module,
 
    control_handle handle = reinterpret_cast<control_handle>( ctrl );
    {
-      std::lock_guard<std::mutex> lock1( g_control_map_mutex );
-      g_control_map[ handle ] = ctrl;
-      std::lock_guard<std::mutex> lock2( g_checkbox_map_mutex );
-      g_checkbox_map[ handle ] = mockBox;
+      g_controls[ handle ] = ctrl;
+      g_checkboxs[ handle ] = mockBox;
    }
    RegisterWidget( handle, box, "API_CheckBox_CreateCheckBox" );
    return handle;
 }
+*/
 
 api_bool API_Button_SetButtonText( control_handle handle,
                                        api_handle client,
@@ -1013,7 +1181,7 @@ api_bool API_Button_SetButtonText( control_handle handle,
 {
    Q_UNUSED( client );
 
-   MockButton* btn = Lookup<MockButton>( g_button_map, g_button_map_mutex,
+   MockButton* btn = Lookup<MockButton>( g_buttons,
                                          handle, "API_Button_SetButtonText" );
    if ( !btn || !btn->button )
       return api_false;
@@ -1028,11 +1196,11 @@ api_bool API_Button_SetButtonChecked( control_handle handle,
 {
    Q_UNUSED( client );
 
-   MockCheckBox* box = Lookup<MockCheckBox>( g_checkbox_map, g_checkbox_map_mutex,
+   MockCheckBox* box = Lookup<MockCheckBox>( g_checkboxs,
                                              handle, "API_Button_SetButtonChecked" );
-   if ( box && box->box )
+   if ( box && box->widget )
    {
-      box->box->setChecked( checked != 0 );
+      box->widget->setChecked( checked != 0 );
       return api_true;
    }
    return api_false;
@@ -1044,9 +1212,9 @@ api_bool API_Button_SetButtonIcon( control_handle handle,
 {
    Q_UNUSED( client );
 
-   MockControl* ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* ctrl = Lookup<MockControl>( g_controls,
                                             handle, "API_Button_SetButtonIcon" );
-   MockBitmap* bmp = Lookup<MockBitmap>( g_bitmap_map, g_bitmap_map_mutex,
+   MockBitmap* bmp = Lookup<MockBitmap>( g_bitmaps,
                                          bitmap, "API_Button_SetButtonIcon" );
    if ( !ctrl || !ctrl->widget || !bmp )
       return api_false;
@@ -1112,6 +1280,7 @@ api_bool API_Control_SetHideEventRoutine( control_handle handle,
 // Edit API
 //---------------------------------------------------------------------
 
+/*
 edit_handle API_Edit_CreateEdit( api_handle module,
                                  api_handle client,
                                  control_handle parent )
@@ -1127,12 +1296,12 @@ edit_handle API_Edit_CreateEdit( api_handle module,
 
    edit_handle handle = reinterpret_cast<edit_handle>( mock );
    {
-      std::lock_guard<std::mutex> lock( g_edit_map_mutex );
-      g_edit_map[ handle ] = mock;
+      g_edits[ handle ] = mock;
    }
    RegisterWidget( handle, edit, "API_Edit_CreateEdit" );
    return handle;
 }
+*/
 
 api_bool API_Edit_SetEditText( edit_handle handle,
                                api_handle client,
@@ -1140,7 +1309,7 @@ api_bool API_Edit_SetEditText( edit_handle handle,
 {
    Q_UNUSED( client );
 
-   MockEdit* e = Lookup<MockEdit>( g_edit_map, g_edit_map_mutex,
+   MockEdit* e = Lookup<MockEdit>( g_edits,
                                    handle, "API_Edit_SetEditText" );
    if ( !e || !e->edit )
       return api_false;
@@ -1186,6 +1355,7 @@ api_bool API_Edit_SetEditValidatingRegExp( edit_handle handle,
 // Slider API
 //---------------------------------------------------------------------
 
+/*
 slider_handle API_Slider_CreateSlider( api_handle module,
                                        api_handle client,
                                        control_handle parent,
@@ -1203,12 +1373,12 @@ slider_handle API_Slider_CreateSlider( api_handle module,
 
    slider_handle handle = reinterpret_cast<slider_handle>( mock );
    {
-      std::lock_guard<std::mutex> lock( g_slider_map_mutex );
-      g_slider_map[ handle ] = mock;
+      g_sliders[ handle ] = mock;
    }
    RegisterWidget( handle, slider, "API_Slider_CreateSlider" );
    return handle;
 }
+*/
 
 api_bool API_Slider_SetSliderRange( slider_handle handle,
                                     api_handle client,
@@ -1216,12 +1386,12 @@ api_bool API_Slider_SetSliderRange( slider_handle handle,
 {
    Q_UNUSED( client );
 
-   MockSlider* s = Lookup<MockSlider>( g_slider_map, g_slider_map_mutex,
+   MockSlider* s = Lookup<MockSlider>( g_sliders,
                                        handle, "API_Slider_SetSliderRange" );
-   if ( !s || !s->slider )
+   if ( !s || !s->widget )
       return api_false;
 
-   s->slider->setRange( minVal, maxVal );
+   s->widget->setRange( minVal, maxVal );
    return api_true;
 }
 
@@ -1231,12 +1401,12 @@ api_bool API_Slider_SetSliderValue( slider_handle handle,
 {
    Q_UNUSED( client );
 
-   MockSlider* s = Lookup<MockSlider>( g_slider_map, g_slider_map_mutex,
+   MockSlider* s = Lookup<MockSlider>( g_sliders,
                                        handle, "API_Slider_SetSliderValue" );
-   if ( !s || !s->slider )
+   if ( !s || !s->widget )
       return api_false;
 
-   s->slider->setValue( value );
+   s->widget->setValue( value );
    return api_true;
 }
 
@@ -1253,32 +1423,33 @@ api_bool API_Slider_SetSliderValueUpdatedEventRoutine( slider_handle handle,
 
 void API_Slider_GetSliderRange(control_handle handle, int32* minValue, int32* maxValue)
 {
-   MockSlider* s = Lookup<MockSlider>( g_slider_map, g_slider_map_mutex,
+   MockSlider* s = Lookup<MockSlider>( g_sliders,
                                        handle, "API_Slider_SetSliderValue" );
-   if ( !s || !s->slider ) {
+   if ( !s || !s->widget ) {
         if (minValue) *minValue = 0;
         if (maxValue) *maxValue = 100;
         return;
     }
     
-    if (minValue) *minValue = s->slider->minimum();
-    if (maxValue) *maxValue = s->slider->maximum();
+    if (minValue) *minValue = s->widget->minimum();
+    if (maxValue) *maxValue = s->widget->maximum();
 }
 
 int32 API_Slider_GetSliderValue(control_handle handle)
 {
-   MockSlider* s = Lookup<MockSlider>( g_slider_map, g_slider_map_mutex,
+   MockSlider* s = Lookup<MockSlider>( g_sliders,
                                        handle, "API_Slider_SetSliderValue" );
-   if ( !s || !s->slider )
+   if ( !s || !s->widget )
      return 0;
 
-   return s->slider->value();
+   return s->widget->value();
 }
 
 //---------------------------------------------------------------------
 // TreeBox & ScrollBox API
 //---------------------------------------------------------------------
 
+/*
 treebox_handle API_TreeBox_CreateTreeBox( api_handle module,
                                           api_handle client,
                                           control_handle parent,
@@ -1298,8 +1469,7 @@ treebox_handle API_TreeBox_CreateTreeBox( api_handle module,
 
    treebox_handle handle = reinterpret_cast<treebox_handle>( mock );
    {
-      std::lock_guard<std::mutex> lock( g_treebox_map_mutex );
-      g_treebox_map[ handle ] = mock;
+      g_treeboxs[ handle ] = mock;
    }
    RegisterWidget( handle, tree, "API_TreeBox_CreateTreeBox" );
    LogDebug( "[PCLMockAPI] CreateTreeBox called" );
@@ -1328,8 +1498,7 @@ control_handle API_ScrollBox_CreateScrollBox( api_handle module,
 
    control_handle handle = reinterpret_cast<control_handle>( ctrl );
    {
-      std::lock_guard<std::mutex> lock( g_control_map_mutex );
-      g_control_map[ handle ] = ctrl;
+      g_controls[ handle ] = ctrl;
    }
    RegisterWidget( handle, scroll, "API_ScrollBox_CreateScrollBox" );
 
@@ -1342,7 +1511,7 @@ control_handle API_ScrollBox_CreateScrollBoxViewport( control_handle scrollHandl
 {
    Q_UNUSED( client );
 
-   MockControl* scrollCtrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* scrollCtrl = Lookup<MockControl>( g_controls,
                                                   scrollHandle, "API_ScrollBox_CreateScrollBoxViewport" );
    if ( !scrollCtrl || !scrollCtrl->widget )
       return nullptr;
@@ -1360,14 +1529,14 @@ control_handle API_ScrollBox_CreateScrollBoxViewport( control_handle scrollHandl
 
    control_handle handle = reinterpret_cast<control_handle>( ctrl );
    {
-      std::lock_guard<std::mutex> lock( g_control_map_mutex );
-      g_control_map[ handle ] = ctrl;
+      g_controls[ handle ] = ctrl;
    }
    RegisterWidget( handle, viewport, "API_ScrollBox_CreateScrollBoxViewport" );
 
    LogDebug( "[PCLMockAPI] CreateScrollBoxViewport called" );
    return handle;
 }
+*/
 
 //---------------------------------------------------------------------
 // Font & Bitmap API (only what logs show is needed)
@@ -1378,7 +1547,7 @@ font_handle API_Control_GetControlFont( control_handle control,
 {
    Q_UNUSED( client );
 
-   MockControl* ctrl = Lookup<MockControl>( g_control_map, g_control_map_mutex,
+   MockControl* ctrl = Lookup<MockControl>( g_controls,
                                             control, "API_Control_GetControlFont" );
    if ( !ctrl || !ctrl->widget )
       return nullptr;
@@ -1389,8 +1558,7 @@ font_handle API_Control_GetControlFont( control_handle control,
 
    font_handle handle = reinterpret_cast<font_handle>( mock );
    {
-      std::lock_guard<std::mutex> lock( g_font_map_mutex );
-      g_font_map[ handle ] = mock;
+      g_fonts[ handle ] = mock;
    }
    return handle;
 }
@@ -1401,12 +1569,13 @@ int32 API_Font_GetStringPixelWidth( font_handle font,
 {
    Q_UNUSED( client );
 
-   MockFont* f = Lookup<MockFont>( g_font_map, g_font_map_mutex,
+   MockFont* f = Lookup<MockFont>( g_fonts,
                                    font, "API_Font_GetStringPixelWidth" );
    if ( !f )
       return 0;
 
    QFontMetrics fm( f->font );
+   return 1; // hack
    return fm.horizontalAdvance( QString::fromUtf16( text ) );
 }
 
@@ -1433,12 +1602,12 @@ bitmap_handle API_Bitmap_CreateBitmapFromFile( api_handle module,
 
    bitmap_handle handle = reinterpret_cast<bitmap_handle>( bmp );
    {
-      std::lock_guard<std::mutex> lock( g_bitmap_map_mutex );
-      g_bitmap_map[ handle ] = bmp;
+      g_bitmaps[ handle ] = bmp;
    }
    return handle;
 }
 
+/*
 bitmap_handle API_Bitmap_CreateBitmap( api_handle module,
                                        api_handle client,
                                        int32 width,
@@ -1457,12 +1626,12 @@ bitmap_handle API_Bitmap_CreateBitmap( api_handle module,
 
    bitmap_handle handle = reinterpret_cast<bitmap_handle>( bmp );
    {
-      std::lock_guard<std::mutex> lock( g_bitmap_map_mutex );
-      g_bitmap_map[ handle ] = bmp;
+      g_bitmaps[ handle ] = bmp;
    }
    return handle;
 }
-
+*/
+  
 //---------------------------------------------------------------------
 // Settings / Global integers (just enough for your logs)
 //---------------------------------------------------------------------
@@ -1530,7 +1699,9 @@ api_bool API_UIObject_DetachFromUIObject( api_handle /*module*/,
 //   - client: PCL client handle
 //   - parent: parent control handle (or nullptr for top-level)
 //   - flags:  PCL control flags
-combo_box_handle API_ComboBox_CreateComboBox( api_handle module,
+
+/*
+combo_handle API_ComboBox_CreateComboBox( api_handle module,
                                               api_handle client,
                                               control_handle parent,
                                               uint32 flags )
@@ -1556,32 +1727,16 @@ combo_box_handle API_ComboBox_CreateComboBox( api_handle module,
     control_handle handle = reinterpret_cast<control_handle>( ctrl );
 
     {
-        std::lock_guard<std::mutex> lock( g_control_map_mutex );
-        g_control_map[ handle ] = ctrl;
+        g_controls[ handle ] = ctrl;
     }
 
-    // combo_box_handle is #defined as control_handle, so this is fine
-    return reinterpret_cast<combo_box_handle>( handle );
+    // combo_handle is #defined as control_handle, so this is fine
+    return reinterpret_cast<combo_handle>( handle );
 }
-
-  /*
-// Add an item to the combo box.
-api_bool API_ComboBox_AddItem( combo_box_handle handle,
-                               const char16_t *text )
-{
-    QComboBox* combo = GetComboBoxFromHandle( handle, "API_ComboBox_AddItem" );
-    if ( !combo )
-        return api_false;
-
-    QString qText = QString( text );
-
-    combo->addItem( qText );
-    return api_true;
-}
-  */
+*/
   
 // Clear all items.
-api_bool API_ComboBox_Clear( combo_box_handle handle )
+api_bool API_ComboBox_Clear( combo_handle handle )
 {
     QComboBox* combo = GetComboBoxFromHandle( handle, "API_ComboBox_Clear" );
     if ( !combo )
@@ -1592,7 +1747,7 @@ api_bool API_ComboBox_Clear( combo_box_handle handle )
 }
 
 // Set current item by index.
-api_bool API_ComboBox_SetCurrentItem( combo_box_handle handle,
+api_bool API_ComboBox_SetCurrentItem( combo_handle handle,
                                       int32 index )
 {
     QComboBox* combo = GetComboBoxFromHandle( handle, "API_ComboBox_SetCurrentItem" );
@@ -1610,7 +1765,7 @@ api_bool API_ComboBox_SetCurrentItem( combo_box_handle handle,
 }
 
 // Get current item index.
-api_bool API_ComboBox_GetCurrentItem( combo_box_handle handle,
+api_bool API_ComboBox_GetCurrentItem( combo_handle handle,
                                       int32* index )
 {
     if ( index == nullptr )
@@ -1625,7 +1780,7 @@ api_bool API_ComboBox_GetCurrentItem( combo_box_handle handle,
 }
 
 // Make combo box editable / non-editable.
-api_bool API_ComboBox_SetEditable( combo_box_handle handle,
+api_bool API_ComboBox_SetEditable( combo_handle handle,
                                    api_bool editable )
 {
     QComboBox* combo = GetComboBoxFromHandle( handle, "API_ComboBox_SetEditable" );
@@ -1637,7 +1792,7 @@ api_bool API_ComboBox_SetEditable( combo_box_handle handle,
 }
 
 
-int32 API_ComboBox_GetComboBoxLength(combo_box_handle handle)
+int32 API_ComboBox_GetComboBoxLength(combo_handle handle)
 {
     LogDebug("GetComboBoxLength called");
     QComboBox* combo = GetComboBoxFromHandle( handle, "API_ComboBox_SetEditable" );
@@ -1694,37 +1849,6 @@ uint32 API_Global_LastError() {
   LogDebug("LastError called");
     return g_last_error;
 }
-
-/*
-api_bool API_Control_GetClientRect(control_handle control,
-                                   int32* x, int32* y,
-                                   int32* w, int32* hgt)
-{
-    if (!w || !hgt) return api_false;
-    
-    MockControl* wdg = Lookup<MockControl>( g_control_map, g_control_map_mutex,
-                                            control, "API_Control_GetClientRect" );
-    if (wdg) {
-    QRect r = wdg->widget->contentsRect();
-
-      if (x) *x = r.x();
-      if (y) *y = r.y();
-      *w   = r.width();
-      *hgt = r.height();
-
-      return api_true;
-
-    }
-
-    // Return a harmless safe rect
-    if (x) *x = 0;
-    if (y) *y = 0;
-    *w   = 0;
-    *hgt = 0;
-    return api_true;
-
-}
-*/
 
 api_bool API_Control_GetClientRect( control_handle control,
                                     int32* x,
@@ -1799,13 +1923,13 @@ struct MockSpinBox {
 };
 
 // Global map to track spinboxes
-static std::map<const_control_handle, MockSpinBox*> g_spinbox_map;
-static std::mutex g_spinbox_map_mutex;
+static std::map<const_control_handle, MockSpinBox*> g_spinboxs;
 
 // ----------------------------------------------------------------------------
 // SpinBoxContext API
 // ----------------------------------------------------------------------------
 
+/*
 control_handle API_SpinBox_CreateSpinBox(api_handle hModule, api_handle client, 
                                          control_handle parent, uint32 flags)
 {
@@ -1822,33 +1946,31 @@ control_handle API_SpinBox_CreateSpinBox(api_handle hModule, api_handle client,
     
     control_handle handle = reinterpret_cast<control_handle>(spin->spinBox);
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    g_spinbox_map[handle] = spin;
+    g_spinboxs[handle] = spin;
     
     return handle;
 }
+*/
 
 int32 API_SpinBox_GetSpinBoxValue(const_control_handle handle)
 {
     LogDebug("GetSpinBoxValue called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(const_cast<control_handle>(handle));
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(const_cast<control_handle>(handle));
+    if (it == g_spinboxs.end()) {
         return 0;
     }
     
-    return it->second->spinBox->value();
+    return it->second.get()->spinBox->value();
 }
 
 void API_SpinBox_SetSpinBoxValue(const_control_handle handle, int32 value)
 {
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end())
+    auto it = g_spinboxs.find(handle);
+    if (it == g_spinboxs.end())
         return;
 
-    MockSpinBox* mock = it->second;
+    MockSpinBox* mock = it->second.get();
     mock->currentValue = value;
 
     // Prevent triggering callbacks during UpdateControls()
@@ -1861,29 +1983,27 @@ void API_SpinBox_GetSpinBoxRange(const_control_handle handle, int32* minValue, i
 {
     LogDebug("GetSpinBoxRange called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(const_cast<control_handle>(handle));
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(const_cast<control_handle>(handle));
+    if (it == g_spinboxs.end()) {
         if (minValue) *minValue = 0;
         if (maxValue) *maxValue = 100;
         return;
     }
     
-    if (minValue) *minValue = it->second->spinBox->minimum();
-    if (maxValue) *maxValue = it->second->spinBox->maximum();
+    if (minValue) *minValue = it->second.get()->spinBox->minimum();
+    if (maxValue) *maxValue = it->second.get()->spinBox->maximum();
 }
 
 void API_SpinBox_SetSpinBoxRange(control_handle handle, int32 minValue, int32 maxValue)
 {
   LogDebug(QString("SetSpinBoxRange called, min=%1, max=%2").arg(minValue).arg(maxValue));
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(handle);
+    if (it == g_spinboxs.end()) {
         return;
     }
     
-    it->second->minValue = minValue;
+    it->second.get()->minValue = minValue;
     it->second->maxValue = maxValue;
     it->second->spinBox->setRange(minValue, maxValue);
 }
@@ -1892,9 +2012,8 @@ int32 API_SpinBox_GetSpinBoxStepSize(const_control_handle handle)
 {
     LogDebug("GetSpinBoxStepSize called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(const_cast<control_handle>(handle));
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(const_cast<control_handle>(handle));
+    if (it == g_spinboxs.end()) {
         return 1;
     }
     
@@ -1905,9 +2024,8 @@ void API_SpinBox_SetSpinBoxStepSize(control_handle handle, int32 stepSize)
 {
   LogDebug(QString("SetSpinBoxStepSize called, stepSize=%1").arg(stepSize));
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(handle);
+    if (it == g_spinboxs.end()) {
         return;
     }
     
@@ -1918,9 +2036,8 @@ api_bool API_SpinBox_GetSpinBoxWrapping(const_control_handle handle)
 {
     LogDebug("GetSpinBoxWrapping called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(const_cast<control_handle>(handle));
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(const_cast<control_handle>(handle));
+    if (it == g_spinboxs.end()) {
         return api_false;
     }
     
@@ -1931,9 +2048,8 @@ void API_SpinBox_SetSpinBoxWrapping(control_handle handle, api_bool wrapping)
 {
   LogDebug(QString("SetSpinBoxWrapping called, wrapping=%1").arg(wrapping));
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(handle);
+    if (it == g_spinboxs.end()) {
         return;
     }
     
@@ -1944,9 +2060,8 @@ api_bool API_SpinBox_GetSpinBoxPrefix(const_control_handle handle, char16_type* 
 {
     LogDebug("GetSpinBoxPrefix called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(const_cast<control_handle>(handle));
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(const_cast<control_handle>(handle));
+    if (it == g_spinboxs.end()) {
         if (len) *len = 0;
         return api_false;
     }
@@ -1974,9 +2089,8 @@ void API_SpinBox_SetSpinBoxPrefix(control_handle handle, const char16_type* pref
 {
     LogDebug("SetSpinBoxPrefix called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(handle);
+    if (it == g_spinboxs.end()) {
         return;
     }
     
@@ -1992,9 +2106,8 @@ api_bool API_SpinBox_GetSpinBoxSuffix(const_control_handle handle, char16_type* 
 {
     LogDebug("GetSpinBoxSuffix called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(const_cast<control_handle>(handle));
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(const_cast<control_handle>(handle));
+    if (it == g_spinboxs.end()) {
         if (len) *len = 0;
         return api_false;
     }
@@ -2022,9 +2135,8 @@ void API_SpinBox_SetSpinBoxSuffix(control_handle handle, const char16_type* suff
 {
     LogDebug("SetSpinBoxSuffix called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(handle);
+    if (it == g_spinboxs.end()) {
         return;
     }
     
@@ -2043,9 +2155,8 @@ api_bool API_SpinBox_SetSpinBoxValueUpdatedEventRoutine(
 {
     LogDebug("SetSpinBoxValueUpdatedEventRoutine called");
 
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end())
+    auto it = g_spinboxs.find(handle);
+    if (it == g_spinboxs.end())
         return api_false;
 
     MockSpinBox* mockSpin = it->second;
@@ -2076,9 +2187,8 @@ int32 API_SpinBox_GetSpinBoxMinEditWidth(const_control_handle handle)
 {
     LogDebug("GetSpinBoxMinEditWidth called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(const_cast<control_handle>(handle));
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(const_cast<control_handle>(handle));
+    if (it == g_spinboxs.end()) {
         return 0;
     }
     
@@ -2089,9 +2199,8 @@ void API_SpinBox_SetSpinBoxMinEditWidth(control_handle handle, int32 width)
 {
   LogDebug(QString("SetSpinBoxMinEditWidth called, width=%1").arg(width));
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(handle);
+    if (it == g_spinboxs.end()) {
         return;
     }
     
@@ -2102,9 +2211,8 @@ api_bool API_SpinBox_IsSpinBoxReadOnly(const_control_handle handle)
 {
     LogDebug("IsSpinBoxReadOnly called");
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(const_cast<control_handle>(handle));
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(const_cast<control_handle>(handle));
+    if (it == g_spinboxs.end()) {
         return api_false;
     }
     
@@ -2115,9 +2223,8 @@ void API_SpinBox_SetSpinBoxReadOnly(control_handle handle, api_bool readOnly)
 {
   LogDebug(QString("SetSpinBoxReadOnly called, readOnly=%1").arg(readOnly));
     
-    std::lock_guard<std::mutex> lock(g_spinbox_map_mutex);
-    auto it = g_spinbox_map.find(handle);
-    if (it == g_spinbox_map.end()) {
+    auto it = g_spinboxs.find(handle);
+    if (it == g_spinboxs.end()) {
         return;
     }
     
@@ -2128,7 +2235,7 @@ void API_SpinBox_SetSpinBoxReadOnly(control_handle handle, api_bool readOnly)
 // ----------------------------------------------------------------------------
 // CheckBox and RadioButton implementations
 // ----------------------------------------------------------------------------
-
+/*
 control_handle API_Button_CreateCheckBox(api_handle hModule, api_handle client, 
                                          const char16_type* text, control_handle parent, uint32 flags)
 {
@@ -2152,8 +2259,7 @@ control_handle API_Button_CreateCheckBox(api_handle hModule, api_handle client,
     
     control_handle handle = reinterpret_cast<control_handle>(btn);
     
-    std::lock_guard<std::mutex> lock(g_button_map_mutex);
-    g_checkbox_map[handle] = btn;
+    g_checkboxs[handle] = btn;
     
     return handle;
 }
@@ -2187,13 +2293,11 @@ control_handle API_Button_CreateRadioButton(api_handle hModule, api_handle clien
     
     control_handle handle = reinterpret_cast<control_handle>(btn->button);
     
-    std::lock_guard<std::mutex> lock(g_button_map_mutex);
-    g_radio_map[handle] = btn;
+    g_radios[handle] = btn;
     
     return handle;
 }
-
-  
+*/
 
 };
 
@@ -2450,7 +2554,6 @@ void API_Thread_GetCurrentThread() { abort(); }
 void API_Thread_GetThreadStatusEx() { abort(); }
 void API_UI_AttachToUIObject() { abort(); }
 void API_UI_DetachFromUIObject() { abort(); }
-void API_UI_GetUIObjectRefCount() { abort(); }
 void API_View_GetViewById() { abort(); }
 void API_View_GetViewFullId() { abort(); }
 void API_View_GetViewId() { abort(); }
