@@ -81,7 +81,8 @@ static inline void logf(const char* fmt, ...)
 // =============================================================
 //  Generic Control Creation Helper
 // =============================================================
-template <typename W>
+/*
+  template <typename W>
 void* createControl(api_handle module, api_handle client, control_handle parent)
 {
     QWidget* parentWidget = nullptr;
@@ -100,6 +101,55 @@ void* createControl(api_handle module, api_handle client, control_handle parent)
         g_lastTopLevel = b;
 
     logf("[Mock] CreateControl %s handle=%p widget=%p parent=%p",
+         typeid(W).name(), h, b->widget, parentWidget);
+
+    return h;
+}
+*/
+// =============================================================
+//  NEW CONTROL CREATION TEMPLATE — FIXED
+// =============================================================
+template <typename W>
+void* createControl(api_handle module, api_handle client, control_handle parent)
+{
+    QWidget* parentWidget = nullptr;
+
+    // Determine the parent QWidget correctly
+    if (auto* p = get(parent))
+    {
+        if (!p->isSizer)
+        {
+            // Parent is a control → parent on its widget
+            parentWidget = p->widget;
+        }
+        else if (p->isSizer && p->layout)
+        {
+            // Parent is a sizer → we must attach to the sizer's parent widget
+            parentWidget = p->layout->parentWidget();
+
+            // If the sizer has no parent widget, but the root window exists,
+            // then we attach controls to the root window by default.
+            if (!parentWidget && g_lastTopLevel && g_lastTopLevel->widget)
+            {
+                parentWidget = g_lastTopLevel->widget;
+            }
+        }
+    }
+
+    // If still NULL, and root window exists → attach to root
+    if (!parentWidget && g_lastTopLevel)
+        parentWidget = g_lastTopLevel->widget;
+
+    // Finally create the QWidget
+    auto* b = new MockBase();
+    b->moduleHandle = module;
+    b->clientHandle = client;
+    b->widget = new W(parentWidget);
+
+    void* h = reinterpret_cast<void*>(b);
+    g_objects[h] = std::unique_ptr<MockBase>(b);
+
+    logf("[Mock] CreateControl %s handle=%p widget=%p parentWidget=%p",
          typeid(W).name(), h, b->widget, parentWidget);
 
     return h;
@@ -152,12 +202,34 @@ sizer_handle API_Sizer_CreateSizer(api_handle module, api_handle client, api_boo
 // =============================================================
 //  Control Creation Wrappers
 // =============================================================
-control_handle API_Control_CreateControl(api_handle m)
+/*
+  control_handle API_Control_CreateControl(api_handle m)
 {
     return reinterpret_cast<control_handle>(
         createControl<QWidget>(m, nullptr, nullptr));
 }
+*/
+control_handle API_Control_CreateControl(api_handle module)
+{
+    auto* b = new MockBase();
+    b->moduleHandle = module;
+    b->clientHandle = nullptr;
 
+    // THIS IS THE ROOT WINDOW
+    b->widget = new QWidget(nullptr);     // real top-level window
+    b->widget->setWindowTitle("Mock Interface");
+
+    control_handle h = reinterpret_cast<control_handle>(b);
+    g_objects[h] = std::unique_ptr<MockBase>(b);
+
+    // Last top-level control = this
+    g_lastTopLevel = b;
+
+    logf("[Mock] Create ROOT Control handle=%p widget=%p", h, b->widget);
+
+    return h;
+}
+  
 label_handle API_Label_CreateLabel(api_handle m, api_handle c, control_handle parent)
 {
     return reinterpret_cast<label_handle>(
@@ -188,19 +260,9 @@ combo_handle API_ComboBox_CreateComboBox(api_handle m, api_handle c, control_han
         createControl<QComboBox>(m, c, parent));
 }
 
-spin_handle API_SpinBox_CreateSpinBox(api_handle m, api_handle c, control_handle parent)
+spin_handle API_SpinBox_CreateSpinBox(api_handle module, api_handle client, control_handle parent)
 {
-    auto* b = new MockBase();
-    b->moduleHandle = m;
-    b->clientHandle = c;
-    b->widget = new QSpinBox(get(parent) ? get(parent)->widget : nullptr);
-
-    spin_handle h = reinterpret_cast<spin_handle>(b);
-    g_objects[h] = std::unique_ptr<MockBase>(b);
-
-    logf("[Mock] CreateSpinBox handle=%p widget=%p", h, b->widget);
-
-    return h;
+    return (spin_handle) createControl<QSpinBox>(module, client, parent);
 }
 
 // =============================================================
@@ -222,21 +284,25 @@ api_bool API_Sizer_InsertSizer(sizer_handle s, api_handle, sizer_handle child, i
 {
     MockBase* S = get(s);
     MockBase* C = get(child);
-    if (!S || !S->isSizer || !C || !C->isSizer)
+    if (!S || !C || !S->isSizer || !C->isSizer)
         return api_false;
 
-    QWidget* container = new QWidget();
-    container->setLayout(C->layout);
+    // PROPER FIX:
+    // Nest layouts by putting the child layout inside a dummy item
+    // that Qt understands as a nested layout (not a QWidget).
 
     if (index < 0) index = S->layout->count();
-    S->layout->insertWidget(index, container, stretch);
+
+    S->layout->insertLayout(index, C->layout, stretch);
+
     return api_true;
 }
-
+  
 // =============================================================
 //  Attach Sizer to Control
 // =============================================================
-api_bool API_Control_SetControlSizer(control_handle h, api_handle, sizer_handle s)
+/*
+  api_bool API_Control_SetControlSizer(control_handle h, api_handle, sizer_handle s)
 {
     MockBase* C = get(h);
     MockBase* S = get(s);
@@ -246,7 +312,25 @@ api_bool API_Control_SetControlSizer(control_handle h, api_handle, sizer_handle 
     C->widget->setLayout(S->layout);
     return api_true;
 }
+*/
+  api_bool API_Control_SetControlSizer(control_handle ctrl, api_handle, sizer_handle s)
+{
+    MockBase* C = get(ctrl);
+    MockBase* S = get(s);
 
+    if (!C || !C->widget || !S || !S->isSizer)
+        return api_false;
+
+    // Wrap sizer layout inside the control's widget
+    QWidget* container = C->widget;
+    container->setLayout(S->layout);
+
+    // RECORD the window root for children
+    S->layout->setParent(container);
+
+    return api_true;
+}
+  
 // =============================================================
 //  Visibility
 // =============================================================
@@ -270,15 +354,58 @@ api_bool API_Control_SetControlVisible(control_handle h, api_handle, uint32 flag
 // =============================================================
 //  Generic control property setters
 // =============================================================
+
+inline int sanitizePCLWidth(int v, QWidget* w)
+{
+  int prev = w->sizeHint().width();
+  if (prev <= 0) prev = 100;
+  // case 1: unspecified
+  if (v <= 0) return prev;
+
+  // case 2: absurd PCL logical pixel or garbage
+  if (v > 5000)          // PI often sends values like 152992 or 427520 or 1876937448
+    return prev;
+
+  // case 3: reasonable direct pixel size
+  return v;
+}
+
+inline int sanitizePCLHeight(int v, QWidget* w)
+{
+  int prev = w->sizeHint().height();
+  if (prev <= 0) prev = 100;
+  // case 1: unspecified
+  if (v <= 0) return prev;
+
+  // case 2: absurd PCL logical pixel or garbage
+  if (v > 5000)          // PI often sends values like 152992 or 427520 or 1876937448
+    return prev;
+
+  // case 3: reasonable direct pixel size
+  return v;
+}
+
 api_bool API_Control_SetControlFixedSize(control_handle h, api_handle, int w, int hgt)
 {
-    if (auto* C = get(h)) { if (C->widget) { C->widget->setFixedSize(w,hgt); return api_true; }}
+    if (auto* C = get(h); C && C->widget) {
+        int pxW = sanitizePCLWidth(w,   C->widget);
+        int pxH = sanitizePCLHeight(hgt, C->widget);
+	logf("API_Control_SetControlFixedSize: %d, %d", pxW, pxH);
+        C->widget->setFixedSize(pxW, pxH);
+        return api_true;
+    }
     return api_false;
 }
 
 api_bool API_Control_SetControlMinSize(control_handle h, api_handle, int w, int hgt)
 {
-    if (auto* C = get(h)) { if (C->widget) { C->widget->setMinimumSize(w,hgt); return api_true; }}
+    if (auto* C = get(h); C && C->widget) {
+        int pxW = sanitizePCLWidth(w,   C->widget);
+        int pxH = sanitizePCLHeight(hgt, C->widget);
+	logf("API_Control_SetControlMinSize: %d, %d", pxW, pxH);
+        C->widget->setMinimumSize(pxW, pxH);
+        return api_true;
+    }
     return api_false;
 }
 
@@ -4904,13 +5031,13 @@ void API_Bitmap_CreateBitmapFromData() { abort(); }
 void API_Bitmap_CreateBitmapFromFile() { abort(); }
 void API_Bitmap_CreateBitmapXPM() { abort(); }
 void API_Bitmap_CreateEmptyBitmap() { abort(); }
-void API_Button_SetButtonChecked() {  }
-void API_Button_SetButtonText() {  }
+void API_Button_SetButtonChecked() { logf("API_Button_SetButtonChecked");  }
+void API_Button_SetButtonText() { logf("API_Button_SetButtonText");  }
 int32 API_ComboBox_GetComboBoxLength() { return 1; }
-void API_ComboBox_InsertComboBoxItem() {  }
-void API_ComboBox_SetComboBoxCurrentItem() {  }
+void API_ComboBox_InsertComboBoxItem() { logf("API_ComboBox_InsertComboBoxItem");  }
+void API_ComboBox_SetComboBoxCurrentItem() { logf("API_ComboBox_SetComboBoxCurrentItem");  }
 api_bool API_ComboBox_SetComboBoxItemSelectedEventRoutine() { return api_true; }
-void API_Control_EnsureControlLayoutUpdated() {  }
+void API_Control_EnsureControlLayoutUpdated() { logf("API_Control_EnsureControlLayoutUpdated");  }
 api_bool       (API_Control_GetControlDisplayPixelRatio)( const_control_handle, double* ratio)
    {
      *ratio = 1.0;
@@ -4925,20 +5052,20 @@ void API_Control_SetControlEnabled() { abort(); }
 void API_Control_SetControlFocus() { abort(); }
 void API_Control_SetControlPosition() { abort(); }
 void API_Control_SetControlSize() { abort(); }
-api_bool API_Control_SetGetFocusEventRoutine() { return api_true; }
-api_bool API_Control_SetKeyPressEventRoutine() { return api_true; }
-api_bool API_Control_SetLoseFocusEventRoutine() { return api_true; }
-api_bool API_Control_SetMousePressEventRoutine() { return api_true; }
+api_bool API_Control_SetGetFocusEventRoutine() { logf("API_Control_SetGetFocusEventRoutine"); return api_true; }
+api_bool API_Control_SetKeyPressEventRoutine() { logf("API_Control_SetKeyPressEventRoutine"); return api_true; }
+api_bool API_Control_SetLoseFocusEventRoutine() { logf("API_Control_SetLoseFocusEventRoutine"); return api_true; }
+api_bool API_Control_SetMousePressEventRoutine() { logf("API_Control_SetMousePressEventRoutine"); return api_true; }
 void API_Control_SetRealTimePreviewActive() { abort(); }
-void API_Control_SetWindowTitle() {  }
-void API_Control_SetWindowToolTip() {  }
+void API_Control_SetWindowTitle() { logf("API_Control_SetWindowTitle"); }
+void API_Control_SetWindowToolTip() { logf("API_Control_SetWindowToolTip");  }
 void API_Edit_GetEditReadOnly() { abort(); }
 void API_Edit_GetEditText() { abort(); }
 void API_Edit_SetEditSelected() { abort(); }
-void API_Edit_SetEditText() { }
-api_bool API_Edit_SetEditValidatingRegExp() { return api_true; }
+void API_Edit_SetEditText() { logf("API_Edit_SetEditText"); }
+api_bool API_Edit_SetEditValidatingRegExp() { logf("API_Edit_SetEditValidatingRegExp"); return api_true; }
 void API_Font_CloneFont() { abort(); }
-  int32 API_Font_GetStringPixelWidth() { return 12;  }
+int32 API_Font_GetStringPixelWidth() { logf("API_Font_GetStringPixelWidth"); return 12;  }
 void API_Global_Abort() { abort(); }
 void API_Global_Allocate() { abort(); }
 void API_Global_BrowseProcessDocumentation() { abort(); }
@@ -4957,8 +5084,8 @@ void API_Global_ReadSettingsInteger() { abort(); }
 void API_Global_ShowConsole() { abort(); }
 void API_Global_WriteConsole() { abort(); }
 void API_Global_WriteSettingsInteger() { abort(); }
-void API_Label_SetLabelAlignment() {  }
-void API_Label_SetLabelText() { }
+void API_Label_SetLabelAlignment() { logf("API_Label_SetLabelAlignment");  }
+void API_Label_SetLabelText() { logf("API_Label_SetLabelText"); }
 void API_Process_CloneProcessInstance() { abort(); }
 void API_SharedImage_DetachFromImage() { abort(); }
 void API_SharedImage_GetImageColorSpace() { abort(); }
@@ -4968,20 +5095,20 @@ void API_SharedImage_GetImageRGBWS() { abort(); }
 void API_SharedImage_SetImageColorSpace() { abort(); }
 void API_SharedImage_SetImageGeometry() { abort(); }
 void API_SharedImage_SetImagePixelData() { abort(); }
-  api_bool API_Sizer_GetSizerDisplayPixelRatio(const_sizer_handle handle, double* ratio) { *ratio = 1.0;return api_true;}
-void API_Sizer_InsertSizerSpacing() {  }
-void API_Sizer_InsertSizerStretch() {  }
-void API_Sizer_SetSizerMargin() { }
-void API_Sizer_SetSizerSpacing() {  }
+api_bool API_Sizer_GetSizerDisplayPixelRatio(const_sizer_handle handle, double* ratio) { logf("API_Sizer_GetSizerDisplayPixelRatio"); *ratio = 1.0;return api_true;}
+void API_Sizer_InsertSizerSpacing() { logf("API_Sizer_InsertSizerSpacing");  }
+void API_Sizer_InsertSizerStretch() { logf("API_Sizer_InsertSizerStretch");  }
+void API_Sizer_SetSizerMargin() { logf("API_Sizer_SetSizerMargin"); }
+void API_Sizer_SetSizerSpacing() { logf("API_Sizer_SetSizerSpacing");  }
   void API_Slider_GetSliderRange(const_control_handle handle, int32* minValue, int32* maxValue) { *minValue = 0; *maxValue=100; }
 void API_Slider_GetSliderValue() { abort(); }
-void API_Slider_SetSliderPageSize() {  }
-void API_Slider_SetSliderRange() {  }
-void API_Slider_SetSliderTickInterval() {  }
-void API_Slider_SetSliderTickStyle() { }
-api_bool API_SpinBox_SetSpinBoxValueUpdatedEventRoutine() { return api_true; }
+void API_Slider_SetSliderPageSize() { logf("API_Slider_SetSliderPageSize");  }
+void API_Slider_SetSliderRange() { logf("API_Slider_SetSliderRange");  }
+void API_Slider_SetSliderTickInterval() { logf("API_Slider_SetSliderTickInterval");  }
+void API_Slider_SetSliderTickStyle() { logf("API_Slider_SetSliderTickStyle"); }
+api_bool API_SpinBox_SetSpinBoxValueUpdatedEventRoutine() { logf("API_SpinBox_SetSpinBoxValueUpdatedEventRoutine"); return api_true; }
 void API_UI_AttachToUIObject() { abort(); }
-  api_bool API_UI_DetachFromUIObject() { return api_true; }
+api_bool API_UI_DetachFromUIObject() { logf("API_UI_DetachFromUIObject"); return api_true; }
 
 // Mock for GetUIObjectRefCount
 size_type API_UI_GetUIObjectRefCount(const_api_handle ui_object) {
