@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <memory>
 #include <cstdio>
+#include <QSvgRenderer>
 
 static bool g_enableDebugLogging = false;
 
@@ -462,6 +463,1280 @@ api_bool API_SpinBox_SetSpinBoxValue(control_handle h, api_handle, int value)
     return api_false;
 }
 
+// Add these implementations to PCLMockAPI.cpp
+
+// ============================================================================
+// Button Creation Functions
+// ============================================================================
+
+control_handle API_Button_CreatePushButton(api_handle m, api_handle c, 
+                                           const char16_t* text, 
+                                           const_bitmap_handle icon, 
+                                           control_handle parent, 
+                                           uint32 flags)
+{
+    auto* btn = reinterpret_cast<QPushButton*>(
+        createControl<QPushButton>(m, c, parent));
+    
+    if (text) {
+        QString qtext = QString::fromUtf16(text);
+        reinterpret_cast<MockBase*>(btn)->widget->setProperty("text", qtext);
+        qobject_cast<QPushButton*>(reinterpret_cast<MockBase*>(btn)->widget)
+            ->setText(qtext);
+    }
+    
+    logf("[Mock] CreatePushButton handle=%p text=%s", btn, 
+         text ? QString::fromUtf16(text).toUtf8().constData() : "(null)");
+    
+    return reinterpret_cast<control_handle>(btn);
+}
+
+control_handle API_Button_CreateRadioButton(api_handle m, api_handle c, 
+                                            const char16_t* text, 
+                                            control_handle parent, 
+                                            uint32 flags)
+{
+    auto* btn = reinterpret_cast<QRadioButton*>(
+        createControl<QRadioButton>(m, c, parent));
+    
+    if (text) {
+        QString qtext = QString::fromUtf16(text);
+        qobject_cast<QRadioButton*>(reinterpret_cast<MockBase*>(btn)->widget)
+            ->setText(qtext);
+    }
+    
+    logf("[Mock] CreateRadioButton handle=%p", btn);
+    return reinterpret_cast<control_handle>(btn);
+}
+
+control_handle API_Button_CreateToolButton(api_handle m, api_handle c, 
+                                           const char16_t* text, 
+                                           const_bitmap_handle icon, 
+                                           api_bool checkable, 
+                                           control_handle parent, 
+                                           uint32 flags)
+{
+    auto* btn = reinterpret_cast<QToolButton*>(
+        createControl<QToolButton>(m, c, parent));
+    
+    auto* mockBase = reinterpret_cast<MockBase*>(btn);
+    auto* toolBtn = qobject_cast<QToolButton*>(mockBase->widget);
+    
+    if (text) {
+        QString qtext = QString::fromUtf16(text);
+        toolBtn->setText(qtext);
+    }
+    
+    toolBtn->setCheckable(checkable);
+    
+    logf("[Mock] CreateToolButton handle=%p checkable=%d", btn, checkable);
+    return reinterpret_cast<control_handle>(btn);
+}
+
+// ============================================================================
+// Button Text Functions
+// ============================================================================
+
+api_bool API_Button_GetButtonText(const_control_handle h, 
+                                  char16_t* text, 
+                                  size_type* len)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return api_false;
+    
+    QString qtext;
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+        qtext = btn->text();
+    } else {
+        return api_false;
+    }
+    
+    if (len) *len = qtext.length();
+    
+    if (text && len && *len > 0) {
+        const char16_t* src = reinterpret_cast<const char16_t*>(
+            qtext.utf16());
+        size_t copyLen = std::min(*len, static_cast<size_type>(qtext.length()));
+        std::memcpy(text, src, copyLen * sizeof(char16_t));
+        if (copyLen < *len) text[copyLen] = 0;
+    }
+    
+    return api_true;
+}
+
+void API_Button_SetButtonText(control_handle h, const char16_t* text)
+{
+    auto* C = get(h);
+    if (!C || !C->widget || !text) return;
+    
+    QString qtext = QString::fromUtf16(text);
+    
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+        btn->setText(qtext);
+        logf("[Mock] SetButtonText: %s", qtext.toUtf8().constData());
+    }
+}
+
+// ============================================================================
+// Button Icon Functions
+// ============================================================================
+
+bitmap_handle API_Button_GetButtonIcon(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return nullptr;
+    
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+        QIcon icon = btn->icon();
+        if (!icon.isNull()) {
+            // Return a simple handle - in real implementation would need proper management
+            return reinterpret_cast<bitmap_handle>(new QIcon(icon));
+        }
+    }
+    
+    return nullptr;
+}
+
+void API_Button_SetButtonIcon(control_handle h, const_bitmap_handle icon)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+      /*
+        if (icon) {
+            QIcon* qicon = reinterpret_cast<QIcon*>(
+                const_cast<void*>(icon));
+            btn->setIcon(*qicon);
+        } else {
+            btn->setIcon(QIcon());
+        }
+      */
+        logf("[Mock] SetButtonIcon");
+    }
+}
+
+void API_Button_GetButtonIconSize(const_control_handle h, int32* w, int32* h_out)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return;
+    
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+        QSize size = btn->iconSize();
+        if (w) *w = size.width();
+        if (h_out) *h_out = size.height();
+    }
+}
+
+void API_Button_SetButtonIconSize(control_handle h, int32 w, int32 h_size)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+        btn->setIconSize(QSize(w, h_size));
+        logf("[Mock] SetButtonIconSize: %d x %d", w, h_size);
+    }
+}
+
+// ============================================================================
+// Button State Functions
+// ============================================================================
+
+api_bool API_Button_GetButtonPushed(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return api_false;
+    
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+        return btn->isDown() ? api_true : api_false;
+    }
+    
+    return api_false;
+}
+
+void API_Button_SetButtonPushed(control_handle h, api_bool pushed)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+        btn->setDown(pushed);
+        logf("[Mock] SetButtonPushed: %d", pushed);
+    }
+}
+
+uint32 API_Button_GetButtonChecked(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return 0;
+    
+    // Try QCheckBox first (supports tristate)
+    if (auto* checkbox = qobject_cast<QCheckBox*>(C->widget)) {
+        Qt::CheckState state = checkbox->checkState();
+        return static_cast<uint32>(state); // 0=unchecked, 1=partial, 2=checked
+    }
+    
+    // Fallback to generic QAbstractButton (binary checked state)
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+        if (btn->isCheckable()) {
+            return btn->isChecked() ? 2 : 0; // 0=unchecked, 2=checked
+        }
+    }
+    
+    return 0;
+}
+
+void API_Button_SetButtonChecked(control_handle h, uint32 state)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    // Try QCheckBox first (supports tristate)
+    if (auto* checkbox = qobject_cast<QCheckBox*>(C->widget)) {
+        checkbox->setCheckState(static_cast<Qt::CheckState>(state));
+        logf("[Mock] SetButtonChecked (QCheckBox): %u", state);
+        return;
+    }
+    
+    // Fallback to generic QAbstractButton (binary checked state)
+    if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
+        btn->setChecked(state != 0);
+        logf("[Mock] SetButtonChecked (QAbstractButton): %u", state);
+    }
+}
+
+// ============================================================================
+// Button Properties
+// ============================================================================
+
+api_bool API_Button_GetButtonDefaultEnabled(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return api_false;
+    
+    if (auto* btn = qobject_cast<QPushButton*>(C->widget)) {
+        return btn->isDefault() ? api_true : api_false;
+    }
+    
+    return api_false;
+}
+
+void API_Button_SetButtonDefaultEnabled(control_handle h, api_bool enabled)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    if (auto* btn = qobject_cast<QPushButton*>(C->widget)) {
+        btn->setDefault(enabled);
+        logf("[Mock] SetButtonDefaultEnabled: %d", enabled);
+    }
+}
+
+api_bool API_Button_GetButtonTristateEnabled(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return api_false;
+    
+    if (auto* btn = qobject_cast<QCheckBox*>(C->widget)) {
+        return btn->isTristate() ? api_true : api_false;
+    }
+    
+    return api_false;
+}
+
+void API_Button_SetButtonTristateEnabled(control_handle h, api_bool enabled)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    if (auto* btn = qobject_cast<QCheckBox*>(C->widget)) {
+        btn->setTristate(enabled);
+        logf("[Mock] SetButtonTristateEnabled: %d", enabled);
+    }
+}
+
+api_bool API_Button_GetToolButtonCheckable(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return api_false;
+    
+    if (auto* btn = qobject_cast<QToolButton*>(C->widget)) {
+        return btn->isCheckable() ? api_true : api_false;
+    }
+    
+    return api_false;
+}
+
+void API_Button_SetToolButtonCheckable(control_handle h, api_bool checkable)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    if (auto* btn = qobject_cast<QToolButton*>(C->widget)) {
+        btn->setCheckable(checkable);
+        logf("[Mock] SetToolButtonCheckable: %d", checkable);
+    }
+}
+
+// ============================================================================
+// Button Event Handlers (Stubs)
+// ============================================================================
+
+api_bool API_Button_SetButtonClickEventRoutine(control_handle h, 
+                                               api_handle client,
+                                               api_handle receiver,
+                                               pcl::api_button_event_routine routine)
+{
+    logf("[Mock] SetButtonClickEventRoutine");
+    return api_true;
+}
+
+api_bool API_Button_SetButtonPressEventRoutine(control_handle h,
+                                               api_handle client, 
+                                               api_handle receiver,
+                                               pcl::event_routine routine)
+{
+    logf("[Mock] SetButtonPressEventRoutine");
+    return api_true;
+}
+
+api_bool API_Button_SetButtonReleaseEventRoutine(control_handle h,
+                                                 api_handle client,
+                                                 api_handle receiver, 
+                                                 pcl::event_routine routine)
+{
+    logf("[Mock] SetButtonReleaseEventRoutine");
+    return api_true;
+}
+
+api_bool API_Button_SetButtonCheckEventRoutine(control_handle h,
+                                               api_handle client,
+                                               api_handle receiver,
+                                               pcl::button_check_event_routine routine)
+{
+    logf("[Mock] SetButtonCheckEventRoutine");
+    return api_true;
+}
+
+// ============================================================================
+// UI Object Management Functions
+// ============================================================================
+
+api_bool API_UI_AttachToUIObject(api_handle object, api_handle client)
+{
+    if (!object) return api_false;
+    
+    auto* C = get(object);
+    if (!C) return api_false;
+    
+    // In a real implementation, this would increment a reference count
+    // For the mock, we just log the attachment
+    logf("[Mock] UI_AttachToUIObject: object=%p client=%p", object, client);
+    
+    return api_true;
+}
+
+api_bool API_UI_DetachFromUIObject(api_handle object, api_handle client)
+{
+    if (!object) return api_false;
+    
+    auto* C = get(object);
+    if (!C) return api_false;
+    
+    // In a real implementation, this would decrement reference count
+    // and potentially destroy the object if count reaches zero
+    logf("[Mock] UI_DetachFromUIObject: object=%p client=%p", object, client);
+    
+    return api_true;
+}
+
+api_handle API_UI_GetUIObjectModule(const_api_handle object)
+{
+    if (!object) return nullptr;
+    
+    auto* C = get(const_cast<void*>(object));
+    if (!C) return nullptr;
+    
+    return C->moduleHandle;
+}
+
+size_type API_UI_GetUIObjectRefCount(const_api_handle object)
+{
+    if (!object) return 0;
+    
+    auto* C = get(const_cast<void*>(object));
+    if (!C) return 0;
+    
+    // In a real implementation, return actual reference count
+    // For the mock, we return 1 to indicate the object exists
+    return 1;
+}
+
+api_bool API_UI_GetUIObjectType(const_api_handle object, 
+                                char* type, 
+                                size_type* len)
+{
+    if (!object) return api_false;
+    
+    auto* C = get(const_cast<void*>(object));
+    if (!C) return api_false;
+    
+    const char* typeName = "Control";
+    
+    if (C->isSizer) {
+        typeName = "Sizer";
+    } else if (C->widget) {
+        if (qobject_cast<QLabel*>(C->widget))
+            typeName = "Label";
+        else if (qobject_cast<QLineEdit*>(C->widget))
+            typeName = "Edit";
+        else if (qobject_cast<QSlider*>(C->widget))
+            typeName = "Slider";
+        else if (qobject_cast<QCheckBox*>(C->widget))
+            typeName = "CheckBox";
+        else if (qobject_cast<QRadioButton*>(C->widget))
+            typeName = "RadioButton";
+        else if (qobject_cast<QPushButton*>(C->widget))
+            typeName = "PushButton";
+        else if (qobject_cast<QToolButton*>(C->widget))
+            typeName = "ToolButton";
+        else if (qobject_cast<QComboBox*>(C->widget))
+            typeName = "ComboBox";
+        else if (qobject_cast<QSpinBox*>(C->widget))
+            typeName = "SpinBox";
+    }
+    
+    size_t typeLen = std::strlen(typeName);
+    
+    if (len) *len = typeLen;
+    
+    if (type && len && *len > 0) {
+        size_t copyLen = std::min(*len, typeLen);
+        std::memcpy(type, typeName, copyLen);
+        if (copyLen < *len) type[copyLen] = '\0';
+    }
+    
+    return api_true;
+}
+
+api_bool API_UI_GetUIObjectId(const_api_handle object, 
+                              char16_t* id, 
+                              size_type* len)
+{
+    if (!object) return api_false;
+    
+    auto* C = get(const_cast<void*>(object));
+    if (!C || !C->widget) return api_false;
+    
+    QString objectName = C->widget->objectName();
+    
+    if (len) *len = objectName.length();
+    
+    if (id && len && *len > 0) {
+        const char16_t* src = reinterpret_cast<const char16_t*>(
+            objectName.utf16());
+        size_t copyLen = std::min(*len, static_cast<size_type>(objectName.length()));
+        std::memcpy(id, src, copyLen * sizeof(char16_t));
+        if (copyLen < *len) id[copyLen] = 0;
+    }
+    
+    return api_true;
+}
+
+api_bool API_UI_SetUIObjectId(api_handle object, const char16_t* id)
+{
+    if (!object || !id) return api_false;
+    
+    auto* C = get(object);
+    if (!C || !C->widget) return api_false;
+    
+    QString qid = QString::fromUtf16(id);
+    C->widget->setObjectName(qid);
+    
+    logf("[Mock] UI_SetUIObjectId: %s", qid.toUtf8().constData());
+    
+    return api_true;
+}
+
+api_bool API_UI_SetHandleDestroyedEventRoutine(api_handle object,
+                                               pcl::destroy_event_routine routine)
+{
+    if (!object) return api_false;
+    
+    // In a real implementation, this would register a callback
+    // to be invoked when the object is destroyed
+    logf("[Mock] UI_SetHandleDestroyedEventRoutine: object=%p", object);
+    
+    return api_true;
+}
+
+// ============================================================================
+// BitmapBox API Implementation
+// ============================================================================
+// Add to PCLMockAPI.cpp
+
+control_handle API_BitmapBox_CreateBitmapBox(api_handle module,
+                                             api_handle client,
+                                             const_bitmap_handle bitmap,
+                                             control_handle parent,
+                                             uint32 flags)
+{
+    auto* box = reinterpret_cast<QLabel*>(
+        createControl<QLabel>(module, client, parent));
+    
+    auto* mockBase = reinterpret_cast<MockBase*>(box);
+    auto* label = qobject_cast<QLabel*>(mockBase->widget);
+    
+    if (bitmap && label) {
+        QPixmap* pixmap = reinterpret_cast<QPixmap*>(
+            const_cast<void*>(bitmap));
+        label->setPixmap(*pixmap);
+        label->setScaledContents(false);
+    }
+    
+    logf("[Mock] CreateBitmapBox handle=%p", box);
+    return reinterpret_cast<control_handle>(box);
+}
+
+bitmap_handle API_BitmapBox_GetBitmapBoxBitmap(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return nullptr;
+    
+    if (auto* label = qobject_cast<QLabel*>(C->widget)) {
+        const QPixmap* pm = label->pixmap();
+        if (pm && !pm->isNull()) {
+            return reinterpret_cast<bitmap_handle>(
+                new QPixmap(*pm));
+        }
+    }
+    
+    return nullptr;
+}
+
+void API_BitmapBox_SetBitmapBoxBitmap(control_handle h,
+                                      const_bitmap_handle bitmap)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    if (auto* label = qobject_cast<QLabel*>(C->widget)) {
+        if (bitmap) {
+            QPixmap* pixmap = reinterpret_cast<QPixmap*>(
+                const_cast<void*>(bitmap));
+            label->setPixmap(*pixmap);
+        } else {
+            label->clear();
+        }
+        logf("[Mock] SetBitmapBoxBitmap");
+    }
+}
+
+int32 API_BitmapBox_GetBitmapBoxMargin(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return 0;
+    
+    if (auto* label = qobject_cast<QLabel*>(C->widget)) {
+        return label->margin();
+    }
+    
+    return 0;
+}
+
+void API_BitmapBox_SetBitmapBoxMargin(control_handle h, int32 margin)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    if (auto* label = qobject_cast<QLabel*>(C->widget)) {
+        label->setMargin(margin);
+        logf("[Mock] SetBitmapBoxMargin: %d", margin);
+    }
+}
+
+api_bool API_BitmapBox_GetBitmapBoxAutoFitEnabled(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return api_false;
+    
+    if (auto* label = qobject_cast<QLabel*>(C->widget)) {
+        return label->hasScaledContents() ? api_true : api_false;
+    }
+    
+    return api_false;
+}
+
+void API_BitmapBox_SetBitmapBoxAutoFitEnabled(control_handle h, api_bool enabled)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    if (auto* label = qobject_cast<QLabel*>(C->widget)) {
+        label->setScaledContents(enabled);
+        logf("[Mock] SetBitmapBoxAutoFitEnabled: %d", enabled);
+    }
+}
+
+// ============================================================================
+// Bitmap Creation Functions
+// ============================================================================
+
+bitmap_handle API_Bitmap_CreateBitmap(api_handle module,
+                                      int32 width,
+                                      int32 height,
+                                      void* data)
+{
+    QPixmap* pixmap = new QPixmap(width, height);
+    
+    if (data) {
+        // Assume data is ARGB32 format
+        QImage img(static_cast<uchar*>(data), width, height,
+                   QImage::Format_ARGB32);
+        *pixmap = QPixmap::fromImage(img);
+    } else {
+        pixmap->fill(Qt::transparent);
+    }
+    
+    logf("[Mock] CreateBitmap: %dx%d", width, height);
+    return reinterpret_cast<bitmap_handle>(pixmap);
+}
+
+bitmap_handle API_Bitmap_CreateBitmapXPM(api_handle module, const char** xpm)
+{
+    if (!xpm) return nullptr;
+    
+    QPixmap* pixmap = new QPixmap(xpm);
+    
+    logf("[Mock] CreateBitmapXPM");
+    return reinterpret_cast<bitmap_handle>(pixmap);
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromFile(api_handle module,
+                                              const char16_t* filePath)
+{
+    if (!filePath) return nullptr;
+    
+    QString path = QString::fromUtf16(filePath);
+    QPixmap* pixmap = new QPixmap(path);
+    
+    if (pixmap->isNull()) {
+        delete pixmap;
+        logf("[Mock] CreateBitmapFromFile FAILED: %s",
+             path.toUtf8().constData());	
+        return API_Bitmap_CreateBitmap(module, 100, 100, 0);
+    }
+    
+    logf("[Mock] CreateBitmapFromFile: %s", path.toUtf8().constData());
+    return reinterpret_cast<bitmap_handle>(pixmap);
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromFile8(api_handle module,
+                                               const char* filePath)
+{
+    if (!filePath) return nullptr;
+    
+    QPixmap* pixmap = new QPixmap(QString::fromUtf8(filePath));
+    
+    if (pixmap->isNull()) {
+        delete pixmap;
+        return nullptr;
+    }
+    
+    logf("[Mock] CreateBitmapFromFile8: %s", filePath);
+    return reinterpret_cast<bitmap_handle>(pixmap);
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromData(api_handle module,
+                                              const void* data,
+                                              size_type size,
+                                              const char* format,
+                                              uint32 flags)
+{
+    if (!data || size == 0) return nullptr;
+    
+    QPixmap* pixmap = new QPixmap();
+    QByteArray bytes(static_cast<const char*>(data), size);
+    
+    if (!pixmap->loadFromData(bytes, format)) {
+        delete pixmap;
+        logf("[Mock] CreateBitmapFromData FAILED");
+        return nullptr;
+    }
+    
+    logf("[Mock] CreateBitmapFromData: format=%s size=%zu",
+         format ? format : "auto", size);
+    return reinterpret_cast<bitmap_handle>(pixmap);
+}
+
+bitmap_handle API_Bitmap_CreateEmptyBitmap(api_handle module)
+{
+    QPixmap* pixmap = new QPixmap();
+    
+    logf("[Mock] CreateEmptyBitmap");
+    return reinterpret_cast<bitmap_handle>(pixmap);
+}
+
+bitmap_handle API_Bitmap_CloneBitmap(api_handle module,
+                                     const_bitmap_handle source)
+{
+    if (!source) return nullptr;
+    
+    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(source));
+    QPixmap* clone = new QPixmap(*src);
+    
+    logf("[Mock] CloneBitmap");
+    return reinterpret_cast<bitmap_handle>(clone);
+}
+
+bitmap_handle API_Bitmap_CloneBitmapRect(api_handle module,
+                                         const_bitmap_handle source,
+                                         int32 x, int32 y,
+                                         int32 w, int32 h)
+{
+    if (!source) return nullptr;
+    
+    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(source));
+    QPixmap* clone = new QPixmap(src->copy(x, y, w, h));
+    
+    logf("[Mock] CloneBitmapRect: %d,%d %dx%d", x, y, w, h);
+    return reinterpret_cast<bitmap_handle>(clone);
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromSVG(api_handle module,
+                                             const char* svgSource,
+                                             int32 width,
+                                             int32 height,
+                                             uint32 flags)
+{
+    if (!svgSource) return nullptr;
+    
+    QByteArray svgData(svgSource);
+    QSvgRenderer renderer(svgData);
+    
+    if (!renderer.isValid()) {
+        logf("[Mock] CreateBitmapFromSVG FAILED: invalid SVG");
+        return nullptr;
+    }
+    
+    QPixmap* pixmap = new QPixmap(width, height);
+    pixmap->fill(Qt::transparent);
+    
+    QPainter painter(pixmap);
+    renderer.render(&painter);
+    
+    logf("[Mock] CreateBitmapFromSVG: %dx%d", width, height);
+    return reinterpret_cast<bitmap_handle>(pixmap);
+}
+
+bitmap_handle API_Bitmap_CreateBitmapFromSVGFile(api_handle module,
+                                                 const char16_t* filePath,
+                                                 int32 width,
+                                                 int32 height,
+                                                 uint32 flags)
+{
+    if (!filePath) return nullptr;
+    
+    QString path = QString::fromUtf16(filePath);
+    QSvgRenderer renderer(path);
+    
+    if (!renderer.isValid()) {
+        logf("[Mock] CreateBitmapFromSVGFile FAILED: %s",
+             path.toUtf8().constData());
+        return nullptr;
+    }
+    
+    QPixmap* pixmap = new QPixmap(width, height);
+    pixmap->fill(Qt::transparent);
+    
+    QPainter painter(pixmap);
+    renderer.render(&painter);
+    
+    logf("[Mock] CreateBitmapFromSVGFile: %s", path.toUtf8().constData());
+    return reinterpret_cast<bitmap_handle>(pixmap);
+}
+
+// ============================================================================
+// Bitmap Properties
+// ============================================================================
+
+int32 API_Bitmap_GetBitmapFormat(bitmap_handle h)
+{
+    if (!h) return 0;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    return pixmap->depth();
+}
+
+void API_Bitmap_SetBitmapFormat(bitmap_handle h, int32 format)
+{
+    // In Qt, format conversion requires creating a new image
+    // For simplicity, we log but don't implement conversion
+    logf("[Mock] SetBitmapFormat: %d (not implemented)", format);
+}
+
+unsigned int* API_Bitmap_GetBitmapScanLine(bitmap_handle h, int32 y)
+{
+    if (!h) return nullptr;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QImage img = pixmap->toImage();
+    
+    if (y < 0 || y >= img.height()) return nullptr;
+    
+    return reinterpret_cast<unsigned int*>(img.scanLine(y));
+}
+
+api_bool API_Bitmap_GetBitmapDimensions(const_bitmap_handle h,
+                                        int32* width,
+                                        int32* height)
+{
+    if (!h) return api_false;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    
+    if (width) *width = pixmap->width();
+    if (height) *height = pixmap->height();
+    
+    return api_true;
+}
+
+api_bool API_Bitmap_IsEmptyBitmap(const_bitmap_handle h)
+{
+    if (!h) return api_true;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    return pixmap->isNull() ? api_true : api_false;
+}
+
+uint32 API_Bitmap_GetBitmapPixel(const_bitmap_handle h, int32 x, int32 y)
+{
+    if (!h) return 0;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    QImage img = pixmap->toImage();
+    
+    if (x < 0 || x >= img.width() || y < 0 || y >= img.height())
+        return 0;
+    
+    return img.pixel(x, y);
+}
+
+void API_Bitmap_SetBitmapPixel(bitmap_handle h, int32 x, int32 y, uint32 rgba)
+{
+    if (!h) return;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QImage img = pixmap->toImage();
+    
+    if (x >= 0 && x < img.width() && y >= 0 && y < img.height()) {
+        img.setPixel(x, y, rgba);
+        *pixmap = QPixmap::fromImage(img);
+    }
+}
+
+// ============================================================================
+// Bitmap Transformations
+// ============================================================================
+
+bitmap_handle API_Bitmap_MirroredBitmap(const_bitmap_handle h,
+                                        api_bool horizontal,
+                                        api_bool vertical)
+{
+    if (!h) return nullptr;
+    
+    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    QTransform transform;
+    
+    if (horizontal) transform.scale(-1, 1);
+    if (vertical) transform.scale(1, -1);
+    
+    QPixmap* result = new QPixmap(src->transformed(transform));
+    
+    logf("[Mock] MirroredBitmap: h=%d v=%d", horizontal, vertical);
+    return reinterpret_cast<bitmap_handle>(result);
+}
+
+bitmap_handle API_Bitmap_ScaledBitmap(const_bitmap_handle h,
+                                      int32 width,
+                                      int32 height,
+                                      api_bool smooth)
+{
+    if (!h) return nullptr;
+    
+    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    Qt::TransformationMode mode = smooth ?
+        Qt::SmoothTransformation : Qt::FastTransformation;
+    
+    QPixmap* result = new QPixmap(src->scaled(width, height,
+                                              Qt::IgnoreAspectRatio, mode));
+    
+    logf("[Mock] ScaledBitmap: %dx%d smooth=%d", width, height, smooth);
+    return reinterpret_cast<bitmap_handle>(result);
+}
+
+bitmap_handle API_Bitmap_RotatedBitmap(const_bitmap_handle h,
+                                       double angle,
+                                       api_bool smooth)
+{
+    if (!h) return nullptr;
+    
+    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    QTransform transform;
+    transform.rotate(angle);
+    
+    Qt::TransformationMode mode = smooth ?
+        Qt::SmoothTransformation : Qt::FastTransformation;
+    
+    QPixmap* result = new QPixmap(src->transformed(transform, mode));
+    
+    logf("[Mock] RotatedBitmap: angle=%.2f smooth=%d", angle, smooth);
+    return reinterpret_cast<bitmap_handle>(result);
+}
+
+// ============================================================================
+// Bitmap I/O
+// ============================================================================
+
+api_bool API_Bitmap_LoadBitmap(bitmap_handle h, const char16_t* filePath)
+{
+    if (!h || !filePath) return api_false;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QString path = QString::fromUtf16(filePath);
+    
+    bool result = pixmap->load(path);
+    
+    logf("[Mock] LoadBitmap: %s %s",
+         path.toUtf8().constData(), result ? "OK" : "FAILED");
+    
+    return result ? api_true : api_false;
+}
+
+api_bool API_Bitmap_SaveBitmap(const_bitmap_handle h,
+                               const char16_t* filePath,
+                               int32 quality)
+{
+    if (!h || !filePath) return api_false;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    QString path = QString::fromUtf16(filePath);
+    
+    bool result = pixmap->save(path, nullptr, quality);
+    
+    logf("[Mock] SaveBitmap: %s quality=%d %s",
+         path.toUtf8().constData(), quality, result ? "OK" : "FAILED");
+    
+    return result ? api_true : api_false;
+}
+
+api_bool API_Bitmap_LoadBitmapData(bitmap_handle h,
+                                   const void* data,
+                                   size_type size,
+                                   const char* format,
+                                   uint32 flags)
+{
+    if (!h || !data || size == 0) return api_false;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QByteArray bytes(static_cast<const char*>(data), size);
+    
+    bool result = pixmap->loadFromData(bytes, format);
+    
+    logf("[Mock] LoadBitmapData: format=%s size=%zu %s",
+         format ? format : "auto", size, result ? "OK" : "FAILED");
+    
+    return result ? api_true : api_false;
+}
+
+// ============================================================================
+// Bitmap Drawing Operations
+// ============================================================================
+
+void API_Bitmap_CopyBitmap(bitmap_handle dest,
+                           int32 xDst, int32 yDst,
+                           const_bitmap_handle src,
+                           int32 xSrc, int32 ySrc,
+                           int32 width, int32 height)
+{
+    if (!dest || !src) return;
+    
+    QPixmap* dstPixmap = reinterpret_cast<QPixmap*>(dest);
+    QPixmap* srcPixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(src));
+    
+    QPainter painter(dstPixmap);
+    painter.drawPixmap(xDst, yDst, *srcPixmap, xSrc, ySrc, width, height);
+    
+    logf("[Mock] CopyBitmap: dst(%d,%d) <- src(%d,%d) %dx%d",
+         xDst, yDst, xSrc, ySrc, width, height);
+}
+
+void API_Bitmap_FillBitmap(bitmap_handle h,
+                           int32 x, int32 y,
+                           int32 width, int32 height,
+                           uint32 rgba)
+{
+    if (!h) return;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QPainter painter(pixmap);
+    painter.fillRect(x, y, width, height, QColor(rgba));
+    
+    logf("[Mock] FillBitmap: (%d,%d) %dx%d rgba=0x%08x",
+         x, y, width, height, rgba);
+}
+
+void API_Bitmap_OrBitmap(bitmap_handle h,
+                         int32 x, int32 y,
+                         int32 width, int32 height,
+                         uint32 rgba)
+{
+    if (!h) return;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QImage img = pixmap->toImage();
+    
+    for (int32 dy = 0; dy < height && (y + dy) < img.height(); ++dy) {
+        for (int32 dx = 0; dx < width && (x + dx) < img.width(); ++dx) {
+            int px = x + dx, py = y + dy;
+            if (px >= 0 && py >= 0) {
+                uint32 pixel = img.pixel(px, py);
+                img.setPixel(px, py, pixel | rgba);
+            }
+        }
+    }
+    
+    *pixmap = QPixmap::fromImage(img);
+    logf("[Mock] OrBitmap");
+}
+
+void API_Bitmap_OrBitmaps(bitmap_handle dest,
+                          int32 xDst, int32 yDst,
+                          const_bitmap_handle src,
+                          int32 xSrc, int32 ySrc,
+                          int32 width, int32 height)
+{
+    if (!dest || !src) return;
+    
+    QPixmap* dstPixmap = reinterpret_cast<QPixmap*>(dest);
+    QPixmap* srcPixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(src));
+    
+    QImage dstImg = dstPixmap->toImage();
+    QImage srcImg = srcPixmap->toImage();
+    
+    for (int32 dy = 0; dy < height; ++dy) {
+        for (int32 dx = 0; dx < width; ++dx) {
+            int sx = xSrc + dx, sy = ySrc + dy;
+            int tx = xDst + dx, ty = yDst + dy;
+            
+            if (sx >= 0 && sx < srcImg.width() && sy >= 0 && sy < srcImg.height() &&
+                tx >= 0 && tx < dstImg.width() && ty >= 0 && ty < dstImg.height()) {
+                uint32 srcPixel = srcImg.pixel(sx, sy);
+                uint32 dstPixel = dstImg.pixel(tx, ty);
+                dstImg.setPixel(tx, ty, dstPixel | srcPixel);
+            }
+        }
+    }
+    
+    *dstPixmap = QPixmap::fromImage(dstImg);
+    logf("[Mock] OrBitmaps");
+}
+
+void API_Bitmap_AndBitmap(bitmap_handle h,
+                          int32 x, int32 y,
+                          int32 width, int32 height,
+                          uint32 rgba)
+{
+    if (!h) return;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QImage img = pixmap->toImage();
+    
+    for (int32 dy = 0; dy < height && (y + dy) < img.height(); ++dy) {
+        for (int32 dx = 0; dx < width && (x + dx) < img.width(); ++dx) {
+            int px = x + dx, py = y + dy;
+            if (px >= 0 && py >= 0) {
+                uint32 pixel = img.pixel(px, py);
+                img.setPixel(px, py, pixel & rgba);
+            }
+        }
+    }
+    
+    *pixmap = QPixmap::fromImage(img);
+    logf("[Mock] AndBitmap");
+}
+
+void API_Bitmap_AndBitmaps(bitmap_handle dest,
+                           int32 xDst, int32 yDst,
+                           const_bitmap_handle src,
+                           int32 xSrc, int32 ySrc,
+                           int32 width, int32 height)
+{
+    if (!dest || !src) return;
+    
+    QPixmap* dstPixmap = reinterpret_cast<QPixmap*>(dest);
+    QPixmap* srcPixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(src));
+    
+    QImage dstImg = dstPixmap->toImage();
+    QImage srcImg = srcPixmap->toImage();
+    
+    for (int32 dy = 0; dy < height; ++dy) {
+        for (int32 dx = 0; dx < width; ++dx) {
+            int sx = xSrc + dx, sy = ySrc + dy;
+            int tx = xDst + dx, ty = yDst + dy;
+            
+            if (sx >= 0 && sx < srcImg.width() && sy >= 0 && sy < srcImg.height() &&
+                tx >= 0 && tx < dstImg.width() && ty >= 0 && ty < dstImg.height()) {
+                uint32 srcPixel = srcImg.pixel(sx, sy);
+                uint32 dstPixel = dstImg.pixel(tx, ty);
+                dstImg.setPixel(tx, ty, dstPixel & srcPixel);
+            }
+        }
+    }
+    
+    *dstPixmap = QPixmap::fromImage(dstImg);
+    logf("[Mock] AndBitmaps");
+}
+
+void API_Bitmap_XorBitmap(bitmap_handle h,
+                          int32 x, int32 y,
+                          int32 width, int32 height,
+                          uint32 rgba)
+{
+    if (!h) return;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QImage img = pixmap->toImage();
+    
+    for (int32 dy = 0; dy < height && (y + dy) < img.height(); ++dy) {
+        for (int32 dx = 0; dx < width && (x + dx) < img.width(); ++dx) {
+            int px = x + dx, py = y + dy;
+            if (px >= 0 && py >= 0) {
+                uint32 pixel = img.pixel(px, py);
+                img.setPixel(px, py, pixel ^ rgba);
+            }
+        }
+    }
+    
+    *pixmap = QPixmap::fromImage(img);
+    logf("[Mock] XorBitmap");
+}
+
+void API_Bitmap_XorBitmaps(bitmap_handle dest,
+                           int32 xDst, int32 yDst,
+                           const_bitmap_handle src,
+                           int32 xSrc, int32 ySrc,
+                           int32 width, int32 height)
+{
+    if (!dest || !src) return;
+    
+    QPixmap* dstPixmap = reinterpret_cast<QPixmap*>(dest);
+    QPixmap* srcPixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(src));
+    
+    QImage dstImg = dstPixmap->toImage();
+    QImage srcImg = srcPixmap->toImage();
+    
+    for (int32 dy = 0; dy < height; ++dy) {
+        for (int32 dx = 0; dx < width; ++dx) {
+            int sx = xSrc + dx, sy = ySrc + dy;
+            int tx = xDst + dx, ty = yDst + dy;
+            
+            if (sx >= 0 && sx < srcImg.width() && sy >= 0 && sy < srcImg.height() &&
+                tx >= 0 && tx < dstImg.width() && ty >= 0 && ty < dstImg.height()) {
+                uint32 srcPixel = srcImg.pixel(sx, sy);
+                uint32 dstPixel = dstImg.pixel(tx, ty);
+                dstImg.setPixel(tx, ty, dstPixel ^ srcPixel);
+            }
+        }
+    }
+    
+    *dstPixmap = QPixmap::fromImage(dstImg);
+    logf("[Mock] XorBitmaps");
+}
+
+void API_Bitmap_XorBitmapRect(bitmap_handle h,
+                              int32 x, int32 y,
+                              int32 width, int32 height,
+                              uint32 rgba)
+{
+    // Same as XorBitmap
+    API_Bitmap_XorBitmap(h, x, y, width, height, rgba);
+}
+
+void API_Bitmap_ReplaceBitmapColor(bitmap_handle h,
+                                   int32 x, int32 y,
+                                   int32 width, int32 height,
+                                   uint32 oldColor,
+                                   uint32 newColor)
+{
+    if (!h) return;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QImage img = pixmap->toImage();
+    
+    for (int32 dy = 0; dy < height && (y + dy) < img.height(); ++dy) {
+        for (int32 dx = 0; dx < width && (x + dx) < img.width(); ++dx) {
+            int px = x + dx, py = y + dy;
+            if (px >= 0 && py >= 0) {
+                if (img.pixel(px, py) == oldColor) {
+                    img.setPixel(px, py, newColor);
+                }
+            }
+        }
+    }
+    
+    *pixmap = QPixmap::fromImage(img);
+    logf("[Mock] ReplaceBitmapColor: 0x%08x -> 0x%08x", oldColor, newColor);
+}
+
+void API_Bitmap_SetBitmapAlpha(bitmap_handle h,
+                               int32 x, int32 y,
+                               int32 width, int32 height,
+                               uint8 alpha)
+{
+    if (!h) return;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QImage img = pixmap->toImage().convertToFormat(QImage::Format_ARGB32);
+    
+    for (int32 dy = 0; dy < height && (y + dy) < img.height(); ++dy) {
+        for (int32 dx = 0; dx < width && (x + dx) < img.width(); ++dx) {
+            int px = x + dx, py = y + dy;
+            if (px >= 0 && py >= 0) {
+                QColor color(img.pixel(px, py));
+                color.setAlpha(alpha);
+                img.setPixel(px, py, color.rgba());
+            }
+        }
+    }
+    
+    *pixmap = QPixmap::fromImage(img);
+    logf("[Mock] SetBitmapAlpha: alpha=%d", alpha);
+}
+
+// ============================================================================
+// Bitmap Device Pixel Ratio
+// ============================================================================
+
+void API_Bitmap_GetBitmapDevicePixelRatio(const_bitmap_handle h, double* ratio)
+{
+    if (!h || !ratio) return;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    *ratio = pixmap->devicePixelRatio();
+}
+
+void API_Bitmap_SetBitmapDevicePixelRatio(bitmap_handle h, double ratio)
+{
+    if (!h) return;
+    
+    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    pixmap->setDevicePixelRatio(ratio);
+    
+    logf("[Mock] SetBitmapDevicePixelRatio: %.2f", ratio);
+}
+
 // =============================================================
 //  No-op stubs for unused API areas
 // =============================================================
@@ -470,7 +1745,6 @@ api_bool API_Control_SetControlFocusStyle(control_handle, api_handle, uint32) { 
 api_bool API_Edit_SetEditCompletedEventRoutine(edit_handle, api_handle, api_handle, pcl::edit_event_routine) { return api_true; }
 api_bool API_Edit_SetReturnPressedEventRoutine(edit_handle, api_handle, api_handle, pcl::edit_event_routine) { return api_true; }
 api_bool API_Slider_SetSliderValueUpdatedEventRoutine(slider_handle, api_handle, api_handle, pcl::api_slider_value_event_routine) { return api_true; }
-api_bool API_Button_SetButtonClickEventRoutine(button_handle, api_handle, api_handle, pcl::api_button_event_routine) { return api_true; }
 api_bool API_SpinBox_SetValueUpdatedEventRoutine(spin_handle, api_handle, api_handle, pcl::api_spinbox_value_event_routine) { return api_true; }
 
 api_bool API_ImageWindow_LoadImageWindows(const char16_t* url, const char* id, const char* hints, api_bool asACopy, api_bool allowMessages, pcl::window_enumeration_callback, void*)
@@ -3716,56 +4990,6 @@ api_bool API_ViewList_SetViewListCurrentViewUpdatedEventRoutine(control_handle, 
 }
 
 // ----------------------------------------------------------------------------
-// BitmapContext API
-// ----------------------------------------------------------------------------
-
-void API_Bitmap_OrBitmap(bitmap_handle, int32, int32, int32, int32, uint32)
-{
-
-  abort();
-}
-void API_Bitmap_OrBitmaps(bitmap_handle, int32, int32, const_bitmap_handle, int32, int32, int32, int32)
-{
-
-  abort();
-}
-void API_Bitmap_AndBitmap(bitmap_handle, int32, int32, int32, int32, uint32)
-{
-
-  abort();
-}
-void API_Bitmap_AndBitmaps(bitmap_handle, int32, int32, const_bitmap_handle, int32, int32, int32, int32)
-{
-
-  abort();
-}
-void API_Bitmap_XorBitmap(bitmap_handle, int32, int32, int32, int32, uint32)
-{
-
-  abort();
-}
-void API_Bitmap_XorBitmaps(bitmap_handle, int32, int32, const_bitmap_handle, int32, int32, int32, int32)
-{
-
-  abort();
-}
-void API_Bitmap_XorBitmapRect(bitmap_handle, int32, int32, int32, int32, uint32)
-{
-
-  abort();
-}
-void API_Bitmap_ReplaceBitmapColor(bitmap_handle, int32, int32, int32, int32, uint32, uint32)
-{
-
-  abort();
-}
-void API_Bitmap_SetBitmapAlpha(bitmap_handle, int32, int32, int32, int32, uint8)
-{
-
-  abort();
-}
-
-// ----------------------------------------------------------------------------
 // SVGContext API
 // ----------------------------------------------------------------------------
 
@@ -5019,13 +6243,6 @@ api_bool API_Control_GetClientRect(control_handle h,
     return api_true;
 }
 
-void API_Bitmap_CloneBitmap() { abort(); }
-void API_Bitmap_CreateBitmapFromData() { abort(); }
-void API_Bitmap_CreateBitmapFromFile() { abort(); }
-void API_Bitmap_CreateBitmapXPM() { abort(); }
-void API_Bitmap_CreateEmptyBitmap() { abort(); }
-void API_Button_SetButtonChecked() { logf("API_Button_SetButtonChecked");  }
-void API_Button_SetButtonText() { logf("API_Button_SetButtonText");  }
 int32 API_ComboBox_GetComboBoxLength() { return 1; }
 void API_ComboBox_InsertComboBoxItem() { logf("API_ComboBox_InsertComboBoxItem");  }
 void API_ComboBox_SetComboBoxCurrentItem() { logf("API_ComboBox_SetComboBoxCurrentItem");  }
@@ -5036,12 +6253,21 @@ api_bool       (API_Control_GetControlDisplayPixelRatio)( const_control_handle, 
      *ratio = 1.0;
      return api_true;
    }
+api_bool       (API_Control_GetControlResourcePixelRatio)( const_control_handle, double* ratio)
+   {
+     *ratio = 1.0;
+     return api_true;
+   }
 void API_Control_GetControlEnabled() { abort(); }
   font_handle API_Control_GetControlFont() { return new QFont; }
-void API_Control_GetControlMaxSize() { abort(); }
-void API_Control_GetControlMinSize() { abort(); }
-void API_Control_GetControlPosition() { abort(); }
-void API_Control_SetControlEnabled() { abort(); }
+void API_Control_GetControlMaxSize(const_control_handle, int32*x, int32*y) { *x = 100; *y = 100; }
+void API_Control_GetControlMinSize(const_control_handle, int32*x, int32*y) { *x = 100; *y = 100; }
+void API_Control_GetControlPosition(const_control_handle, int32*x, int32*y)
+{
+  *x = 0;
+  *y = 0;
+}
+void API_Control_SetControlEnabled() {  }
 void API_Control_SetControlFocus() { abort(); }
 void API_Control_SetControlPosition() { abort(); }
 void API_Control_SetControlSize() { abort(); }
@@ -5069,11 +6295,17 @@ void API_Global_GetConsole() { abort(); }
 void API_Global_GetGlobalInteger() { abort(); }
 void API_Global_GetKeyboardModifiers() { abort(); }
 void API_Global_GetProcessStatus() { abort(); }
-void API_Global_LastError() { abort(); }
+uint32 API_Global_LastError() { return 0; }
 void API_Global_LaunchProcessInstance4() { abort(); }
 void API_Global_LaunchProcessInstanceOnView() { abort(); }
 void API_Global_MessageBox() { abort(); }
-void API_Global_ReadSettingsInteger() { abort(); }
+
+api_bool    (API_Global_ReadSettingsInteger)( api_handle, int32*rslt, const char* key, api_bool global )
+{
+  *rslt = 0;
+  return api_true;
+}
+
 void API_Global_ShowConsole() { abort(); }
 void API_Global_WriteConsole() { abort(); }
 void API_Global_WriteSettingsInteger() { abort(); }
@@ -5100,19 +6332,7 @@ void API_Slider_SetSliderRange() { logf("API_Slider_SetSliderRange");  }
 void API_Slider_SetSliderTickInterval() { logf("API_Slider_SetSliderTickInterval");  }
 void API_Slider_SetSliderTickStyle() { logf("API_Slider_SetSliderTickStyle"); }
 api_bool API_SpinBox_SetSpinBoxValueUpdatedEventRoutine() { logf("API_SpinBox_SetSpinBoxValueUpdatedEventRoutine"); return api_true; }
-void API_UI_AttachToUIObject() { abort(); }
-api_bool API_UI_DetachFromUIObject() { logf("API_UI_DetachFromUIObject"); return api_true; }
 
-// Mock for GetUIObjectRefCount
-size_type API_UI_GetUIObjectRefCount(const_api_handle ui_object) {
-    
-    if (!ui_object) {
-        return 0; // No references for null object
-    }
-    
-    // Return 1 to indicate the object exists and has at least one reference
-    return 1;
-}
 void API_View_GetViewById() { abort(); }
 void API_View_GetViewFullId() { abort(); }
 void API_View_GetViewId() { abort(); }
@@ -5120,5 +6340,1018 @@ void API_View_GetViewImage() { abort(); }
 void API_View_GetViewLocks() { abort(); }
 void API_View_LockView() { abort(); }
 void API_View_UnlockView() { abort(); }
+void API_Control_GetControlParent() { abort(); }
+api_bool API_Control_GetControlVisible() { return api_true; }
+void API_Control_SetControlMaxSize() { abort(); }
+void API_Control_SetControlUpdatesEnabled() {  }
+api_bool API_Control_SetFileDragEventRoutine() { return api_true; }
+api_bool API_Control_SetFileDropEventRoutine() { return api_true; }
+api_bool API_Control_SetHideEventRoutine() { return api_true; }
+api_bool API_Control_SetShowEventRoutine()
+{
+  logf("API_Control_SetShowEventRoutine");
+  return api_true;
+}
+void API_Dialog_ExecuteOpenFileDialog() { abort(); }
+void API_Dialog_ExecuteOpenMultipleFilesDialog() { abort(); }
+void API_FileFormat_CreateFileFormatInstance() { abort(); }
+void API_FileFormat_DisposeFormatSpecificData() { abort(); }
+void API_FileFormat_EditFileFormatPreferences() { abort(); }
+void API_FileFormat_GetFileFormatByFileExtension() { abort(); }
+void API_FileFormat_GetFileFormatByMimeType() { abort(); }
+void API_FileFormat_GetFileFormatByName() { abort(); }
+void API_FileFormat_GetFileFormatCapabilities() { abort(); }
+void API_FileFormat_GetFileFormatDescription() { abort(); }
+void API_FileFormat_GetFileFormatFileExtensions() { abort(); }
+void API_FileFormat_GetFileFormatIcon() { abort(); }
+void API_FileFormat_GetFileFormatImplementation() { abort(); }
+void API_FileFormat_GetFileFormatMimeTypes() { abort(); }
+void API_FileFormat_GetFileFormatName() { abort(); }
+void API_FileFormat_GetFileFormatSmallIcon() { abort(); }
+void API_FileFormat_GetFileFormatStatus() { abort(); }
+void API_FileFormat_GetFileFormatVersion() { abort(); }
+void API_FileFormat_GetImageCount() { abort(); }
+void API_FileFormat_GetImageDescription() { abort(); }
+void API_FileFormat_GetImageId() { abort(); }
+void API_FileFormat_OpenImageFileEx() { abort(); }
+void API_FileFormat_ReadImage() { abort(); }
+void API_FileFormat_SelectImage() { abort(); }
+void API_FileFormat_ValidateFormatSpecificData() { abort(); }
+int API_Font_GetFontHeight() { return 12; }
+void API_Global_GetGlobalFlag() { abort(); }
+void API_Global_GetGlobalString() { abort(); }
+void API_Global_MaxProcessorsAllowedForModule() { abort(); }
+void API_Global_ProcessEvents() { abort(); }
+void API_ImageWindow_CreateImageWindow() { abort(); }
+void API_Numerical_FFTComplexInverseTransformD() { abort(); }
+void API_Numerical_FFTComplexTransformD() { abort(); }
+void API_Numerical_FFTCreateComplexInverseTransformD() { abort(); }
+void API_Numerical_FFTCreateComplexTransformD() { abort(); }
+void API_Numerical_FFTCreateRealTransformD() { abort(); }
+void API_Numerical_FFTDestroyTransform() { abort(); }
+void API_Numerical_FFTRealOptimizedLengthF() { abort(); }
+void API_Numerical_FFTRealTransformD() { abort(); }
+void API_ScrollBox_CreateScrollBoxViewport() { abort(); }
+void API_SharedImage_CreateImage() { abort(); }
+
+// ============================================================================
+// TreeBox Node State Functions
+// ============================================================================
+
+api_bool API_TreeBox_GetTreeBoxNodeEnabled(api_handle node)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return !(item->flags() & Qt::ItemIsEnabled) ? api_false : api_true;
+}
+
+void API_TreeBox_SetTreeBoxNodeEnabled(api_handle node, api_bool enabled)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    Qt::ItemFlags flags = item->flags();
+    
+    if (enabled)
+        flags |= Qt::ItemIsEnabled;
+    else
+        flags &= ~Qt::ItemIsEnabled;
+    
+    item->setFlags(flags);
+    logf("[Mock] SetTreeBoxNodeEnabled: %d", enabled);
+}
+
+api_bool API_TreeBox_GetTreeBoxNodeExpanded(api_handle node)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return item->isExpanded() ? api_true : api_false;
+}
+
+void API_TreeBox_SetTreeBoxNodeExpanded(api_handle node, api_bool expanded)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    item->setExpanded(expanded);
+    logf("[Mock] SetTreeBoxNodeExpanded: %d", expanded);
+}
+
+api_bool API_TreeBox_GetTreeBoxNodeSelectable(api_handle node)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return (item->flags() & Qt::ItemIsSelectable) ? api_true : api_false;
+}
+
+void API_TreeBox_SetTreeBoxNodeSelectable(api_handle node, api_bool selectable)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    Qt::ItemFlags flags = item->flags();
+    
+    if (selectable)
+        flags |= Qt::ItemIsSelectable;
+    else
+        flags &= ~Qt::ItemIsSelectable;
+    
+    item->setFlags(flags);
+    logf("[Mock] SetTreeBoxNodeSelectable: %d", selectable);
+}
+
+api_bool API_TreeBox_GetTreeBoxNodeSelected(api_handle node)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return item->isSelected() ? api_true : api_false;
+}
+
+void API_TreeBox_SetTreeBoxNodeSelected(api_handle node, api_bool selected)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    item->setSelected(selected);
+    logf("[Mock] SetTreeBoxNodeSelected: %d", selected);
+}
+
+api_bool API_TreeBox_GetTreeBoxNodeCheckable(api_handle node)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return (item->flags() & Qt::ItemIsUserCheckable) ? api_true : api_false;
+}
+
+void API_TreeBox_SetTreeBoxNodeCheckable(api_handle node, api_bool checkable)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    Qt::ItemFlags flags = item->flags();
+    
+    if (checkable) {
+        flags |= Qt::ItemIsUserCheckable;
+        item->setCheckState(0, Qt::Unchecked);
+    } else {
+        flags &= ~Qt::ItemIsUserCheckable;
+    }
+    
+    item->setFlags(flags);
+    logf("[Mock] SetTreeBoxNodeCheckable: %d", checkable);
+}
+
+api_bool API_TreeBox_GetTreeBoxNodeChecked(api_handle node)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return (item->checkState(0) == Qt::Checked) ? api_true : api_false;
+}
+
+void API_TreeBox_SetTreeBoxNodeChecked(api_handle node, api_bool checked)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    item->setCheckState(0, checked ? Qt::Checked : Qt::Unchecked);
+    logf("[Mock] SetTreeBoxNodeChecked: %d", checked);
+}
+
+api_bool API_TreeBox_GetTreeBoxNodeEditable(api_handle node)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return (item->flags() & Qt::ItemIsEditable) ? api_true : api_false;
+}
+
+void API_TreeBox_SetTreeBoxNodeEditable(api_handle node, api_bool editable)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    Qt::ItemFlags flags = item->flags();
+    
+    if (editable)
+        flags |= Qt::ItemIsEditable;
+    else
+        flags &= ~Qt::ItemIsEditable;
+    
+    item->setFlags(flags);
+    logf("[Mock] SetTreeBoxNodeEditable: %d", editable);
+}
+
+api_bool API_TreeBox_GetTreeBoxNodeFirstColumnSpanned(api_handle node)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    if (QTreeWidget* tree = item->treeWidget()) {
+        return tree->isFirstItemColumnSpanned(item) ? api_true : api_false;
+    }
+    
+    return api_false;
+}
+
+void API_TreeBox_SetTreeBoxNodeFirstColumnSpanned(api_handle node, api_bool spanned)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    if (QTreeWidget* tree = item->treeWidget()) {
+        tree->setFirstItemColumnSpanned(item, spanned);
+        logf("[Mock] SetTreeBoxNodeFirstColumnSpanned: %d", spanned);
+    }
+}
+
+// ============================================================================
+// TreeBox Node Column Content Functions
+// ============================================================================
+
+api_bool API_TreeBox_GetTreeBoxNodeColText(api_handle node,
+                                           int32 col,
+                                           char16_t* text,
+                                           size_type* len)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QString qtext = item->text(col);
+    
+    if (len) *len = qtext.length();
+    
+    if (text && len && *len > 0) {
+        const char16_t* src = reinterpret_cast<const char16_t*>(qtext.utf16());
+        size_t copyLen = std::min(*len, static_cast<size_type>(qtext.length()));
+        std::memcpy(text, src, copyLen * sizeof(char16_t));
+        if (copyLen < *len) text[copyLen] = 0;
+    }
+    
+    return api_true;
+}
+
+void API_TreeBox_SetTreeBoxNodeColText(api_handle node,
+                                       int32 col,
+                                       const char16_t* text)
+{
+    if (!node || !text) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QString qtext = QString::fromUtf16(text);
+    item->setText(col, qtext);
+    logf("[Mock] SetTreeBoxNodeColText col=%d: %s", col, qtext.toUtf8().constData());
+}
+
+bitmap_handle API_TreeBox_GetTreeBoxNodeColIcon(api_handle node, int32 col)
+{
+    if (!node) return nullptr;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return nullptr;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QIcon icon = item->icon(col);
+    
+    if (!icon.isNull()) {
+        QPixmap pixmap = icon.pixmap(32, 32); // Default size
+        return reinterpret_cast<bitmap_handle>(new QPixmap(pixmap));
+    }
+    
+    return nullptr;
+}
+
+void API_TreeBox_SetTreeBoxNodeColIcon(api_handle node,
+                                       int32 col,
+                                       const_bitmap_handle icon)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    
+    if (icon) {
+        QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(icon));
+        item->setIcon(col, QIcon(*pixmap));
+    } else {
+        item->setIcon(col, QIcon());
+    }
+    
+    logf("[Mock] SetTreeBoxNodeColIcon col=%d", col);
+}
+
+int32 API_TreeBox_GetTreeBoxNodeColAlignment(api_handle node, int32 col)
+{
+    if (!node) return 0;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return 0;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return static_cast<int32>(item->textAlignment(col));
+}
+
+void API_TreeBox_SetTreeBoxNodeColAlignment(api_handle node,
+                                            int32 col,
+                                            int32 alignment)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    item->setTextAlignment(col, alignment);
+    logf("[Mock] SetTreeBoxNodeColAlignment col=%d align=%d", col, alignment);
+}
+
+api_bool API_TreeBox_GetTreeBoxNodeColToolTip(api_handle node,
+                                              int32 col,
+                                              char16_t* text,
+                                              size_type* len)
+{
+    if (!node) return api_false;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return api_false;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QString qtext = item->toolTip(col);
+    
+    if (len) *len = qtext.length();
+    
+    if (text && len && *len > 0) {
+        const char16_t* src = reinterpret_cast<const char16_t*>(qtext.utf16());
+        size_t copyLen = std::min(*len, static_cast<size_type>(qtext.length()));
+        std::memcpy(text, src, copyLen * sizeof(char16_t));
+        if (copyLen < *len) text[copyLen] = 0;
+    }
+    
+    return api_true;
+}
+
+void API_TreeBox_SetTreeBoxNodeColToolTip(api_handle node,
+                                          int32 col,
+                                          const char16_t* text)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QString qtext = text ? QString::fromUtf16(text) : QString();
+    item->setToolTip(col, qtext);
+    logf("[Mock] SetTreeBoxNodeColToolTip col=%d", col);
+}
+
+font_handle API_TreeBox_GetTreeBoxNodeColFont(api_handle node, int32 col)
+{
+    if (!node) return nullptr;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return nullptr;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QFont font = item->font(col);
+    return reinterpret_cast<font_handle>(new QFont(font));
+}
+
+void API_TreeBox_SetTreeBoxNodeColFont(api_handle node,
+                                       int32 col,
+                                       const_font_handle font)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    
+    if (font) {
+        QFont* qfont = reinterpret_cast<QFont*>(const_cast<void*>(font));
+        item->setFont(col, *qfont);
+    }
+    
+    logf("[Mock] SetTreeBoxNodeColFont col=%d", col);
+}
+
+uint32 API_TreeBox_GetTreeBoxNodeColBackgroundColor(api_handle node, int32 col)
+{
+    if (!node) return 0;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return 0;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QBrush brush = item->background(col);
+    return brush.color().rgba();
+}
+
+void API_TreeBox_SetTreeBoxNodeColBackgroundColor(api_handle node,
+                                                  int32 col,
+                                                  uint32 rgba)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    item->setBackground(col, QBrush(QColor(rgba)));
+    logf("[Mock] SetTreeBoxNodeColBackgroundColor col=%d rgba=0x%08x", col, rgba);
+}
+
+uint32 API_TreeBox_GetTreeBoxNodeColTextColor(api_handle node, int32 col)
+{
+    if (!node) return 0;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return 0;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QBrush brush = item->foreground(col);
+    return brush.color().rgba();
+}
+
+void API_TreeBox_SetTreeBoxNodeColTextColor(api_handle node,
+                                            int32 col,
+                                            uint32 rgba)
+{
+    if (!node) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    item->setForeground(col, QBrush(QColor(rgba)));
+    logf("[Mock] SetTreeBoxNodeColTextColor col=%d rgba=0x%08x", col, rgba);
+}
+
+// ============================================================================
+// TreeBox Event Handlers (Stubs)
+// ============================================================================
+
+api_bool API_TreeBox_SetTreeBoxCurrentNodeUpdatedEventRoutine(
+    control_handle h,
+    api_handle client,
+    pcl::item_range_event_routine routine)
+{
+    logf("[Mock] SetTreeBoxCurrentNodeUpdatedEventRoutine");
+    return api_true;
+}
+
+api_bool API_TreeBox_SetTreeBoxNodeActivatedEventRoutine(
+    control_handle h,
+    api_handle client,
+    pcl::item_value_event_routine routine)
+{
+    logf("[Mock] SetTreeBoxNodeActivatedEventRoutine");
+    return api_true;
+}
+
+api_bool API_TreeBox_SetTreeBoxNodeUpdatedEventRoutine(
+    control_handle h,
+    api_handle client,
+    pcl::item_value_event_routine routine)
+{
+    logf("[Mock] SetTreeBoxNodeUpdatedEventRoutine");
+    return api_true;
+}
+
+api_bool API_TreeBox_SetTreeBoxNodeEnteredEventRoutine(
+    control_handle h,
+    api_handle client,
+    pcl::item_value_event_routine routine)
+{
+    logf("[Mock] SetTreeBoxNodeEnteredEventRoutine");
+    return api_true;
+}
+
+api_bool API_TreeBox_SetTreeBoxNodeClickedEventRoutine(
+    control_handle h,
+    api_handle client,
+    pcl::item_value_event_routine routine)
+{
+    logf("[Mock] SetTreeBoxNodeClickedEventRoutine");
+    return api_true;
+}
+
+api_bool API_TreeBox_SetTreeBoxNodeDoubleClickedEventRoutine(
+    control_handle h,
+    api_handle client,
+    pcl::item_value_event_routine routine)
+{
+    logf("[Mock] SetTreeBoxNodeDoubleClickedEventRoutine");
+    return api_true;
+}
+
+api_bool API_TreeBox_SetTreeBoxNodeExpandedEventRoutine(
+    control_handle h,
+    api_handle client,
+    pcl::item_event_routine routine)
+{
+    logf("[Mock] SetTreeBoxNodeExpandedEventRoutine");
+    return api_true;
+}
+
+api_bool API_TreeBox_SetTreeBoxNodeCollapsedEventRoutine(
+    control_handle h,
+    api_handle client,
+    pcl::item_event_routine routine)
+{
+    logf("[Mock] SetTreeBoxNodeCollapsedEventRoutine");
+    return api_true;
+}
+
+api_bool API_TreeBox_SetTreeBoxNodeSelectionUpdatedEventRoutine(
+    control_handle h,
+    api_handle client,
+    pcl::event_routine routine)
+{
+    logf("[Mock] SetTreeBoxNodeSelectionUpdatedEventRoutine");
+    return api_true;
+}
+
+// updates
+// ============================================================================
+// TreeBox Missing Stub Implementations - Replace abort() calls
+// ============================================================================
+
+control_handle API_TreeBox_CreateTreeBox(api_handle module,
+                                         api_handle client,
+                                         control_handle parent,
+                                         uint32 flags)
+{
+    auto* treeHandle = createControl<QTreeWidget>(module, client, parent);
+    
+    auto* C = get(treeHandle);
+    if (!C || !C->widget) return nullptr;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (tree) {
+        tree->setColumnCount(1); // Default to 1 column
+        tree->setHeaderHidden(false);
+    }
+    
+    logf("[Mock] CreateTreeBox handle=%p", treeHandle);
+    return reinterpret_cast<control_handle>(treeHandle);
+}
+
+control_handle API_TreeBox_CreateTreeBoxViewport(control_handle h,
+                                                 api_handle client)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return nullptr;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return nullptr;
+    
+    QWidget* viewport = tree->viewport();
+    
+    logf("[Mock] CreateTreeBoxViewport");
+    return reinterpret_cast<control_handle>(viewport);
+}
+
+api_handle API_TreeBox_CreateTreeBoxNode(api_handle module,
+                                         api_handle nodeClient)
+{
+    auto* b = new MockBase();
+    b->moduleHandle = module;
+    b->clientHandle = nodeClient;
+    
+    // Create QTreeWidgetItem and store as widget (even though it's not a QWidget)
+    QTreeWidgetItem* item = new QTreeWidgetItem();
+    b->widget = reinterpret_cast<QWidget*>(item);
+    
+    // Set default flags
+    item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    
+    void* h = reinterpret_cast<void*>(b);
+    g_objects[h] = std::unique_ptr<MockBase>(b);
+    
+    logf("[Mock] CreateTreeBoxNode handle=%p client=%p", h, nodeClient);
+    return h;
+}
+
+void API_TreeBox_ClearTreeBox(control_handle h)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    tree->clear();
+    
+    logf("[Mock] ClearTreeBox");
+}
+
+int32 API_TreeBox_GetTreeBoxChildCount(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return 0;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return 0;
+    
+    return tree->topLevelItemCount();
+}
+
+api_handle API_TreeBox_GetTreeBoxChild(const_control_handle h, int32 idx)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return nullptr;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return nullptr;
+    
+    QTreeWidgetItem* item = tree->topLevelItem(idx);
+    if (!item) return nullptr;
+    
+    // Find the handle for this item in g_objects
+    for (auto& kv : g_objects) {
+        MockBase* obj = kv.second.get();
+        if (reinterpret_cast<QTreeWidgetItem*>(obj->widget) == item) {
+            return kv.first;
+        }
+    }
+    
+    return nullptr;
+}
+
+int32 API_TreeBox_GetTreeBoxChildIndex(const_control_handle h,
+                                       const_api_handle node)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget || !node) return -1;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return -1;
+    
+    auto it = g_objects.find(const_cast<void*>(node));
+    if (it == g_objects.end()) return -1;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return tree->indexOfTopLevelItem(item);
+}
+
+void API_TreeBox_InsertTreeBoxNode(control_handle h,
+                                   int32 idx,
+                                   api_handle node)
+{
+    auto* C = get(h);
+    if (!C || !C->widget || !node) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    
+    if (idx < 0 || idx >= tree->topLevelItemCount()) {
+        tree->addTopLevelItem(item);
+    } else {
+        tree->insertTopLevelItem(idx, item);
+    }
+    
+    logf("[Mock] InsertTreeBoxNode idx=%d", idx);
+}
+
+void API_TreeBox_RemoveTreeBoxNode(control_handle h, int32 idx)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    QTreeWidgetItem* item = tree->takeTopLevelItem(idx);
+    if (item) {
+        logf("[Mock] RemoveTreeBoxNode idx=%d", idx);
+    }
+}
+
+api_handle API_TreeBox_GetTreeBoxCurrentNode(const_control_handle h)
+{
+    auto* C = get(const_cast<void*>(h));
+    if (!C || !C->widget) return nullptr;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return nullptr;
+    
+    QTreeWidgetItem* item = tree->currentItem();
+    if (!item) return nullptr;
+    
+    // Find the handle for this item
+    for (auto& kv : g_objects) {
+        MockBase* obj = kv.second.get();
+        if (reinterpret_cast<QTreeWidgetItem*>(obj->widget) == item) {
+            return kv.first;
+        }
+    }
+    
+    return nullptr;
+}
+
+void API_TreeBox_SetTreeBoxCurrentNode(control_handle h, api_handle node)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    if (!node) {
+        tree->setCurrentItem(nullptr);
+        return;
+    }
+    
+    auto it = g_objects.find(node);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    tree->setCurrentItem(item);
+    
+    logf("[Mock] SetTreeBoxCurrentNode");
+}
+
+void API_TreeBox_SelectAllTreeBoxNodes(control_handle h)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    tree->selectAll();
+    
+    logf("[Mock] SelectAllTreeBoxNodes");
+}
+
+void API_TreeBox_SetTreeBoxMultipleNodeSelectionEnabled(control_handle h,
+                                                        api_bool enabled)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    tree->setSelectionMode(enabled ?
+        QAbstractItemView::ExtendedSelection :
+        QAbstractItemView::SingleSelection);
+    
+    logf("[Mock] SetTreeBoxMultipleNodeSelectionEnabled: %d", enabled);
+}
+
+void API_TreeBox_SetTreeBoxColumnCount(control_handle h, int32 count)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    tree->setColumnCount(count);
+    
+    logf("[Mock] SetTreeBoxColumnCount: %d", count);
+}
+
+void API_TreeBox_AdjustTreeBoxColumnWidthToContents(control_handle h, int32 col)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    tree->resizeColumnToContents(col);
+    
+    logf("[Mock] AdjustTreeBoxColumnWidthToContents col=%d", col);
+}
+
+void API_TreeBox_SetTreeBoxHeaderVisible(control_handle h, api_bool visible)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    tree->setHeaderHidden(!visible);
+    
+    logf("[Mock] SetTreeBoxHeaderVisible: %d", visible);
+}
+
+void API_TreeBox_SetTreeBoxRootDecorationEnabled(control_handle h,
+                                                 api_bool enabled)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    tree->setRootIsDecorated(enabled);
+    
+    logf("[Mock] SetTreeBoxRootDecorationEnabled: %d", enabled);
+}
+
+void API_TreeBox_SetTreeBoxAlternateRowColorEnabled(control_handle h,
+                                                    api_bool enabled)
+{
+    auto* C = get(h);
+    if (!C || !C->widget) return;
+    
+    QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
+    if (!tree) return;
+    
+    tree->setAlternatingRowColors(enabled);
+    
+    logf("[Mock] SetTreeBoxAlternateRowColorEnabled: %d", enabled);
+}
+
+control_handle API_TreeBox_GetTreeBoxNodeParentBox(const_api_handle node)
+{
+    if (!node) return nullptr;
+    
+    auto it = g_objects.find(const_cast<void*>(node));
+    if (it == g_objects.end()) return nullptr;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QTreeWidget* tree = item->treeWidget();
+    
+    if (!tree) return nullptr;
+    
+    // Find the control handle for this tree widget
+    for (auto& kv : g_objects) {
+        MockBase* obj = kv.second.get();
+        if (obj->widget == tree) {
+            return reinterpret_cast<control_handle>(kv.first);
+        }
+    }
+    
+    return nullptr;
+}
+
+api_handle API_TreeBox_GetTreeBoxNodeParent(const_api_handle node)
+{
+    if (!node) return nullptr;
+    
+    auto it = g_objects.find(const_cast<void*>(node));
+    if (it == g_objects.end()) return nullptr;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QTreeWidgetItem* parent = item->parent();
+    
+    if (!parent) return nullptr;
+    
+    // Find the handle for the parent item
+    for (auto& kv : g_objects) {
+        MockBase* obj = kv.second.get();
+        if (reinterpret_cast<QTreeWidgetItem*>(obj->widget) == parent) {
+            return kv.first;
+        }
+    }
+    
+    return nullptr;
+}
+
+int32 API_TreeBox_GetTreeBoxNodeChildCount(const_api_handle node)
+{
+    if (!node) return 0;
+    
+    auto it = g_objects.find(const_cast<void*>(node));
+    if (it == g_objects.end()) return 0;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    return item->childCount();
+}
+
+api_handle API_TreeBox_GetTreeBoxNodeChild(const_api_handle node, int32 idx)
+{
+    if (!node) return nullptr;
+    
+    auto it = g_objects.find(const_cast<void*>(node));
+    if (it == g_objects.end()) return nullptr;
+    
+    QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QTreeWidgetItem* child = item->child(idx);
+    
+    if (!child) return nullptr;
+    
+    // Find the handle for the child item
+    for (auto& kv : g_objects) {
+        MockBase* obj = kv.second.get();
+        if (reinterpret_cast<QTreeWidgetItem*>(obj->widget) == child) {
+            return kv.first;
+        }
+    }
+    
+    return nullptr;
+}
+
+void API_TreeBox_InsertTreeBoxNodeChild(api_handle parentNode,
+                                        int32 idx,
+                                        api_handle childNode)
+{
+    if (!parentNode || !childNode) return;
+    
+    auto parentIt = g_objects.find(parentNode);
+    if (parentIt == g_objects.end()) return;
+    
+    auto childIt = g_objects.find(childNode);
+    if (childIt == g_objects.end()) return;
+    
+    QTreeWidgetItem* parent = reinterpret_cast<QTreeWidgetItem*>(parentIt->second.get()->widget);
+    QTreeWidgetItem* child = reinterpret_cast<QTreeWidgetItem*>(childIt->second.get()->widget);
+    
+    if (idx < 0 || idx >= parent->childCount()) {
+        parent->addChild(child);
+    } else {
+        parent->insertChild(idx, child);
+    }
+    
+    logf("[Mock] InsertTreeBoxNodeChild idx=%d", idx);
+}
+
+void API_TreeBox_RemoveTreeBoxNodeChild(api_handle parentNode, int32 idx)
+{
+    if (!parentNode) return;
+    
+    auto it = g_objects.find(parentNode);
+    if (it == g_objects.end()) return;
+    
+    QTreeWidgetItem* parent = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
+    QTreeWidgetItem* child = parent->takeChild(idx);
+    
+    if (child) {
+        logf("[Mock] RemoveTreeBoxNodeChild idx=%d", idx);
+    }
+}
 
 }  // extern "C"
