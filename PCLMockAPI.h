@@ -183,7 +183,7 @@ api_bool API_Slider_SetSliderValueUpdatedEventRoutine(slider_handle,
 api_bool API_Button_SetButtonClickEventRoutine(button_handle,
                                                api_handle,
                                                api_handle,
-                                               pcl::api_button_event_routine);
+                                               pcl::button_click_event_routine);
 
 api_bool API_SpinBox_SetValueUpdatedEventRoutine(spin_handle,
                                                  api_handle,

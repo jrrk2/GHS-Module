@@ -13,6 +13,9 @@
 #include <memory>
 #include <cstdio>
 #include <QSvgRenderer>
+#include <QScrollArea>
+#include <QFontMetrics>
+#include <QFont>
 
 static bool g_enableDebugLogging = false;
 
@@ -32,6 +35,114 @@ struct MockBase
 
     api_handle   moduleHandle = nullptr;
     api_handle   clientHandle = nullptr;
+    // Control event callbacks
+    pcl::control_event_routine        onShow     = nullptr;
+    pcl::mouse_event_routine          onMouseMove = nullptr;
+    pcl::mouse_button_event_routine   onMousePress = nullptr;
+    pcl::mouse_button_event_routine   onMouseRelease = nullptr;
+    pcl::keyboard_event_routine       onKeyPress = nullptr;
+
+    // Button
+    pcl::button_click_event_routine   onButtonClick = nullptr;
+    pcl::button_check_event_routine   onButtonCheck = nullptr;
+
+    // TreeBox
+    pcl::item_event_routine           onTreeNodeActivated = nullptr;
+    pcl::item_event_routine           onTreeNodeUpdated = nullptr;
+    pcl::item_event_routine           onTreeSelectionUpdated = nullptr;
+};
+
+class MockEventFilter : public QObject
+{
+public:
+    explicit MockEventFilter(MockBase* b)
+        : QObject(b->widget), base(b) {}
+
+protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override
+    {
+        if (!base || obj != base->widget)
+            return QObject::eventFilter(obj, ev);
+
+        QWidget* w = base->widget;
+
+        // --- SHOW EVENT ------------------------------------------------------
+        if (ev->type() == QEvent::Show)
+        {
+            if (base->onShow)
+                base->onShow(reinterpret_cast<control_handle>(base),
+                              reinterpret_cast<control_handle>(base));
+        }
+
+        // --- MOUSE MOVE ------------------------------------------------------
+        if (ev->type() == QEvent::MouseMove)
+        {
+            if (base->onMouseMove)
+            {
+                auto* e = static_cast<QMouseEvent*>(ev);
+                base->onMouseMove(reinterpret_cast<control_handle>(base),
+                                  reinterpret_cast<control_handle>(base),
+                                  e->x(),
+                                  e->y(),
+                                  e->buttons(),
+                                  QApplication::keyboardModifiers());
+                return false;
+            }
+        }
+
+        // --- MOUSE PRESS -----------------------------------------------------
+        if (ev->type() == QEvent::MouseButtonPress)
+        {
+            if (base->onMousePress)
+            {
+                auto* e = static_cast<QMouseEvent*>(ev);
+                base->onMousePress(reinterpret_cast<control_handle>(base),
+                                   reinterpret_cast<control_handle>(base),
+                                   e->x(),
+                                   e->y(),
+                                   e->button(),
+                                   e->buttons(),
+                                   QApplication::keyboardModifiers());
+                return false;
+            }
+        }
+
+        // --- MOUSE RELEASE ---------------------------------------------------
+        if (ev->type() == QEvent::MouseButtonRelease)
+        {
+            if (base->onMouseRelease)
+            {
+                auto* e = static_cast<QMouseEvent*>(ev);
+                base->onMouseRelease(reinterpret_cast<control_handle>(base),
+                                     reinterpret_cast<control_handle>(base),
+                                     e->x(),
+                                     e->y(),
+                                     e->button(),
+                                     e->buttons(),
+                                     QApplication::keyboardModifiers());
+                return false;
+            }
+        }
+
+        // --- KEY PRESS -------------------------------------------------------
+        if (ev->type() == QEvent::KeyPress)
+        {
+            if (base->onKeyPress)
+            {
+                auto* e = static_cast<QKeyEvent*>(ev);
+                base->onKeyPress(reinterpret_cast<control_handle>(base),
+                                 reinterpret_cast<control_handle>(base),
+                                 e->key(),
+                                 QApplication::keyboardModifiers());
+                return false;
+            }
+        }
+
+        return QObject::eventFilter(obj, ev);
+    }
+
+private:
+    MockBase* base;
 };
 
 // Simple pointer-based hash/equality for handle types (control_handle etc.)
@@ -68,9 +179,62 @@ static inline MockBase* get(void* h)
     return (it == g_objects.end()) ? nullptr : it->second.get();
 }
 
+//
+// --- Helper functions for control/sizer/widget lookup ---
+//
+
+static QWidget* widgetFromHandle( control_handle h )
+{
+    if (!h)
+        return nullptr;
+
+    if (MockBase* b = get(h))
+        return b->widget;
+
+    return nullptr;
+}
+
+static QWidget* widgetFromHandle( const_control_handle h )
+{
+    return widgetFromHandle(const_cast<control_handle>(h));
+}
+
+static QBoxLayout* layoutFromSizer( sizer_handle s )
+{
+    if (!s)
+        return nullptr;
+
+    if (MockBase* b = get(s))
+        return (b->isSizer ? b->layout : nullptr);
+
+    return nullptr;
+}
+
+static QBoxLayout* layoutFromSizer( const_sizer_handle s )
+{
+    return layoutFromSizer(const_cast<sizer_handle>(s));
+}
+
+static QTreeWidget* treeFromHandle( control_handle h )
+{
+    if (!h)
+        return nullptr;
+
+    if (MockBase* b = get(h))
+        return qobject_cast<QTreeWidget*>(b->widget);
+
+    return nullptr;
+}
+
+static QTreeWidget* treeFromHandle( const_control_handle h )
+{
+    return treeFromHandle(const_cast<control_handle>(h));
+}
+
 // =============================================================
 // Utility: Logging
 // =============================================================
+
 static inline void logf(const char* fmt, ...)
 {
     va_list ap; va_start(ap, fmt);
@@ -80,36 +244,9 @@ static inline void logf(const char* fmt, ...)
 }
 
 // =============================================================
-//  Generic Control Creation Helper
-// =============================================================
-/*
-  template <typename W>
-void* createControl(api_handle module, api_handle client, control_handle parent)
-{
-    QWidget* parentWidget = nullptr;
-    if (auto* p = get(parent))
-        parentWidget = p->widget;
-
-    auto* b = new MockBase();
-    b->moduleHandle = module;
-    b->clientHandle = client;
-    b->widget = new W(parentWidget);
-
-    void* h = reinterpret_cast<void*>(b);
-    g_objects[h] = std::unique_ptr<MockBase>(b);
-
-    if (!parentWidget)
-        g_lastTopLevel = b;
-
-    logf("[Mock] CreateControl %s handle=%p widget=%p parent=%p",
-         typeid(W).name(), h, b->widget, parentWidget);
-
-    return h;
-}
-*/
-// =============================================================
 //  NEW CONTROL CREATION TEMPLATE — FIXED
 // =============================================================
+
 template <typename W>
 void* createControl(api_handle module, api_handle client, control_handle parent)
 {
@@ -146,6 +283,7 @@ void* createControl(api_handle module, api_handle client, control_handle parent)
     b->moduleHandle = module;
     b->clientHandle = client;
     b->widget = new W(parentWidget);
+    b->widget->installEventFilter(new MockEventFilter(b));
 
     void* h = reinterpret_cast<void*>(b);
     g_objects[h] = std::unique_ptr<MockBase>(b);
@@ -389,6 +527,7 @@ inline int sanitizePCLHeight(int v, QWidget* w)
 api_bool API_Control_SetControlFixedSize(control_handle h, api_handle, int w, int hgt)
 {
     if (auto* C = get(h); C && C->widget) {
+	logf("API_Control_SetControlFixedSize (raw): %d, %d", w, hgt);
         int pxW = sanitizePCLWidth(w,   C->widget);
         int pxH = sanitizePCLHeight(hgt, C->widget);
 	logf("API_Control_SetControlFixedSize: %d, %d", pxW, pxH);
@@ -401,6 +540,7 @@ api_bool API_Control_SetControlFixedSize(control_handle h, api_handle, int w, in
 api_bool API_Control_SetControlMinSize(control_handle h, api_handle, int w, int hgt)
 {
     if (auto* C = get(h); C && C->widget) {
+	logf("API_Control_SetControlMinSize (raw): %d, %d", w, hgt);
         int pxW = sanitizePCLWidth(w,   C->widget);
         int pxH = sanitizePCLHeight(hgt, C->widget);
 	logf("API_Control_SetControlMinSize: %d, %d", pxW, pxH);
@@ -410,9 +550,107 @@ api_bool API_Control_SetControlMinSize(control_handle h, api_handle, int w, int 
     return api_false;
 }
 
+api_bool _API_Control_SetControlFixedSize( control_handle h, api_handle, int32 w, int32 hgt )
+{
+    if (auto* wdg = widgetFromHandle(h))
+      {
+        wdg->setFixedSize(w,hgt);
+        return api_true;
+      }
+    else 
+        return api_true;
+}
+
+api_bool _API_Control_SetControlMinSize( control_handle h, api_handle, int32 w, int32 hgt )
+{
+    if (auto* wdg = widgetFromHandle(h))
+      {
+        wdg->setMinimumSize(w,hgt);
+        return api_true;
+      }
+    else 
+        return api_true;
+}
+
+void API_Control_SetWindowToolTip( control_handle h, const char16_type* t )
+{
+    if (auto* wdg = widgetFromHandle(h))
+        wdg->setToolTip(QString::fromUtf16(t));
+}
+
+void API_Control_SetWindowTitle( control_handle h, const char16_type* t )
+{
+    if (auto* wdg = widgetFromHandle(h))
+        wdg->setWindowTitle(QString::fromUtf16(t));
+}
+
+void API_Control_EnsureControlLayoutUpdated( control_handle h )
+{
+    if (auto* wdg = widgetFromHandle(h))
+    {
+        if (auto* l = wdg->layout())
+        {
+            l->invalidate();
+            l->activate();
+        }
+        wdg->updateGeometry();
+        wdg->update();
+    }
+}
+
 api_bool API_Control_SetControlBackgroundColor(control_handle h, api_handle, uint32)
 {
     // Ignore for simplicity; implement if needed
+    return api_true;
+}
+
+api_bool API_Control_SetKeyPressEventRoutine(
+    control_handle h,
+    api_handle /*client*/,
+    pcl::keyboard_event_routine r)
+{
+    if (auto* b = get(h))
+        b->onKeyPress = r;
+    return api_true;
+}
+
+api_bool API_Control_SetMousePressEventRoutine(
+    control_handle h,
+    api_handle /*client*/,
+    pcl::mouse_button_event_routine r)
+{
+    if (auto* b = get(h))
+        b->onMousePress = r;
+    return api_true;
+}
+
+api_bool API_Control_SetMouseReleaseEventRoutine(
+    control_handle h,
+    api_handle /*client*/,
+    pcl::mouse_button_event_routine r)
+{
+    if (auto* b = get(h))
+        b->onMouseRelease = r;
+    return api_true;
+}
+
+api_bool API_Control_SetMouseMoveEventRoutine(
+    control_handle h,
+    api_handle /*client*/,
+    pcl::mouse_event_routine r)
+{
+    if (auto* b = get(h))
+        b->onMouseMove = r;
+    return api_true;
+}
+
+api_bool API_Control_SetShowEventRoutine(
+    control_handle h,
+    api_handle /*client*/,
+    pcl::control_event_routine r)
+{
+    if (auto* b = get(h))
+        b->onShow = r;
     return api_true;
 }
 
@@ -783,15 +1021,6 @@ void API_Button_SetToolButtonCheckable(control_handle h, api_bool checkable)
 // Button Event Handlers (Stubs)
 // ============================================================================
 
-api_bool API_Button_SetButtonClickEventRoutine(control_handle h, 
-                                               api_handle client,
-                                               api_handle receiver,
-                                               pcl::api_button_event_routine routine)
-{
-    logf("[Mock] SetButtonClickEventRoutine");
-    return api_true;
-}
-
 api_bool API_Button_SetButtonPressEventRoutine(control_handle h,
                                                api_handle client, 
                                                api_handle receiver,
@@ -810,12 +1039,58 @@ api_bool API_Button_SetButtonReleaseEventRoutine(control_handle h,
     return api_true;
 }
 
-api_bool API_Button_SetButtonCheckEventRoutine(control_handle h,
-                                               api_handle client,
-                                               api_handle receiver,
-                                               pcl::button_check_event_routine routine)
+api_bool API_Button_SetButtonClickEventRoutine(
+    button_handle h,
+    api_handle /* */,
+    api_handle /* */,
+    pcl::button_click_event_routine r)
 {
-    logf("[Mock] SetButtonCheckEventRoutine");
+    if (auto* b = get(h))
+    {
+        b->onButtonClick = r;
+        if (auto* w = widgetFromHandle(h))
+        {
+            if (auto* pb = qobject_cast<QAbstractButton*>(w))
+            {
+                QObject::connect(pb, &QAbstractButton::clicked, [b](bool checked){
+                    if (b->onButtonClick)
+                    {
+                        b->onButtonClick(
+                            reinterpret_cast<control_handle>(b),
+                            reinterpret_cast<control_handle>(b),
+                            checked ? api_true : api_false);
+                    }
+                });
+            }
+        }
+    }
+    return api_true;
+}
+
+api_bool API_Button_SetButtonCheckEventRoutine(
+    control_handle h,
+    api_handle /*client*/,
+    pcl::button_check_event_routine r)
+{
+    if (auto* b = get(h))
+    {
+        b->onButtonCheck = r;
+        if (auto* w = widgetFromHandle(h))
+        {
+            if (auto* cb = qobject_cast<QCheckBox*>(w))
+            {
+                QObject::connect(cb, &QCheckBox::stateChanged, [b](int st){
+                    if (b->onButtonCheck)
+                    {
+                        b->onButtonCheck(
+                            reinterpret_cast<control_handle>(b),
+                            reinterpret_cast<control_handle>(b),
+                            st);
+                    }
+                });
+            }
+        }
+    }
     return api_true;
 }
 
@@ -6247,7 +6522,6 @@ int32 API_ComboBox_GetComboBoxLength() { return 1; }
 void API_ComboBox_InsertComboBoxItem() { logf("API_ComboBox_InsertComboBoxItem");  }
 void API_ComboBox_SetComboBoxCurrentItem() { logf("API_ComboBox_SetComboBoxCurrentItem");  }
 api_bool API_ComboBox_SetComboBoxItemSelectedEventRoutine() { return api_true; }
-void API_Control_EnsureControlLayoutUpdated() { logf("API_Control_EnsureControlLayoutUpdated");  }
 api_bool       (API_Control_GetControlDisplayPixelRatio)( const_control_handle, double* ratio)
    {
      *ratio = 1.0;
@@ -6272,19 +6546,50 @@ void API_Control_SetControlFocus() { abort(); }
 void API_Control_SetControlPosition() { abort(); }
 void API_Control_SetControlSize() { abort(); }
 api_bool API_Control_SetGetFocusEventRoutine() { logf("API_Control_SetGetFocusEventRoutine"); return api_true; }
-api_bool API_Control_SetKeyPressEventRoutine() { logf("API_Control_SetKeyPressEventRoutine"); return api_true; }
 api_bool API_Control_SetLoseFocusEventRoutine() { logf("API_Control_SetLoseFocusEventRoutine"); return api_true; }
-api_bool API_Control_SetMousePressEventRoutine() { logf("API_Control_SetMousePressEventRoutine"); return api_true; }
 void API_Control_SetRealTimePreviewActive() { abort(); }
-void API_Control_SetWindowTitle() { logf("API_Control_SetWindowTitle"); }
-void API_Control_SetWindowToolTip() { logf("API_Control_SetWindowToolTip");  }
 void API_Edit_GetEditReadOnly() { abort(); }
 void API_Edit_GetEditText() { abort(); }
 void API_Edit_SetEditSelected() { abort(); }
-void API_Edit_SetEditText() { logf("API_Edit_SetEditText"); }
-api_bool API_Edit_SetEditValidatingRegExp() { logf("API_Edit_SetEditValidatingRegExp"); return api_true; }
+
+api_bool API_Edit_SetEditValidatingRegExp(
+    control_handle h,
+    const char16_type* pattern,
+    api_bool caseSensitive )
+{
+  logf("API_Edit_SetEditValidatingRegExp");
+    auto* edit = qobject_cast<QLineEdit*>(widgetFromHandle(h));
+    if (!edit) return api_false;
+
+    QString pat = QString::fromUtf16(pattern);
+    QRegularExpression re(pat);
+
+    if (!caseSensitive)
+        re.setPatternOptions(QRegularExpression::CaseInsensitiveOption);
+
+    edit->setValidator(new QRegularExpressionValidator(re, edit));
+    return api_true;
+}
+
+void API_Edit_SetEditText( control_handle h, const char16_type* t )
+{
+  logf("API_Edit_SetEditText"); 
+    if (auto* edit = qobject_cast<QLineEdit*>(widgetFromHandle(h)))
+        edit->setText(QString::fromUtf16(t));
+}
+
 void API_Font_CloneFont() { abort(); }
-int32 API_Font_GetStringPixelWidth() { logf("API_Font_GetStringPixelWidth"); return 12;  }
+
+int32 API_Font_GetStringPixelWidth( const_font_handle, const char16_type* text )
+{
+    QString s = QString::fromUtf16(text);
+
+    QFont f;                 // default font
+    QFontMetrics fm(f);      // <-- no vexing parse
+
+    return fm.horizontalAdvance(s);
+}
+
 void API_Global_Abort() { abort(); }
 void API_Global_Allocate() { abort(); }
 void API_Global_BrowseProcessDocumentation() { abort(); }
@@ -6309,8 +6614,80 @@ api_bool    (API_Global_ReadSettingsInteger)( api_handle, int32*rslt, const char
 void API_Global_ShowConsole() { abort(); }
 void API_Global_WriteConsole() { abort(); }
 void API_Global_WriteSettingsInteger() { abort(); }
-void API_Label_SetLabelAlignment() { logf("API_Label_SetLabelAlignment");  }
-void API_Label_SetLabelText() { logf("API_Label_SetLabelText"); }
+
+void API_Label_SetLabelText( control_handle h, const char16_type* t )
+{
+    if (auto* w = qobject_cast<QLabel*>(widgetFromHandle(h)))
+        w->setText(QString::fromUtf16(t));
+}
+
+void API_Label_SetLabelAlignment( control_handle h, int32 flags )
+{
+    if (auto* w = qobject_cast<QLabel*>(widgetFromHandle(h)))
+    {
+        Qt::Alignment a{};
+        uint32 f = uint32(flags);
+
+        if (f & 0x01) a |= Qt::AlignLeft;
+        if (f & 0x02) a |= Qt::AlignHCenter;
+        if (f & 0x04) a |= Qt::AlignRight;
+        if (f & 0x10) a |= Qt::AlignTop;
+        if (f & 0x20) a |= Qt::AlignVCenter;
+        if (f & 0x40) a |= Qt::AlignBottom;
+
+        if (!a) a = Qt::AlignLeft | Qt::AlignVCenter;
+
+        w->setAlignment(a);
+    }
+}
+
+api_bool API_Sizer_GetSizerDisplayPixelRatio( const_sizer_handle s, double* ratio )
+{
+    if (!ratio)
+        return api_false;
+
+    QBoxLayout* l = layoutFromSizer(s);
+    double r = 1.0;
+
+    if (l && l->parentWidget())
+        r = l->parentWidget()->devicePixelRatioF();
+
+    *ratio = r;
+    return api_true;
+}
+
+void API_Sizer_InsertSizerSpacing( sizer_handle s, int32 index, int32 px )
+{
+    if (QBoxLayout* l = layoutFromSizer(s))
+    {
+        if (index < 0 || index > l->count())
+            index = l->count();
+        l->insertSpacing(index, px);
+    }
+}
+
+void API_Sizer_InsertSizerStretch( sizer_handle s, int32 index, int32 stretch )
+{
+    if (QBoxLayout* l = layoutFromSizer(s))
+    {
+        if (index < 0 || index > l->count())
+            index = l->count();
+        l->insertStretch(index, stretch);
+    }
+}
+
+void API_Sizer_SetSizerMargin( sizer_handle s, int32 px )
+{
+    if (QBoxLayout* l = layoutFromSizer(s))
+        l->setContentsMargins(px,px,px,px);
+}
+
+void API_Sizer_SetSizerSpacing( sizer_handle s, int32 px )
+{
+    if (QBoxLayout* l = layoutFromSizer(s))
+        l->setSpacing(px);
+}
+
 void API_Process_CloneProcessInstance() { abort(); }
 void API_SharedImage_DetachFromImage() { abort(); }
 void API_SharedImage_GetImageColorSpace() { abort(); }
@@ -6320,19 +6697,46 @@ void API_SharedImage_GetImageRGBWS() { abort(); }
 void API_SharedImage_SetImageColorSpace() { abort(); }
 void API_SharedImage_SetImageGeometry() { abort(); }
 void API_SharedImage_SetImagePixelData() { abort(); }
-api_bool API_Sizer_GetSizerDisplayPixelRatio(const_sizer_handle handle, double* ratio) { logf("API_Sizer_GetSizerDisplayPixelRatio"); *ratio = 1.0;return api_true;}
-void API_Sizer_InsertSizerSpacing() { logf("API_Sizer_InsertSizerSpacing");  }
-void API_Sizer_InsertSizerStretch() { logf("API_Sizer_InsertSizerStretch");  }
-void API_Sizer_SetSizerMargin() { logf("API_Sizer_SetSizerMargin"); }
-void API_Sizer_SetSizerSpacing() { logf("API_Sizer_SetSizerSpacing");  }
-  void API_Slider_GetSliderRange(const_control_handle handle, int32* minValue, int32* maxValue) { *minValue = 0; *maxValue=100; }
+void API_Slider_GetSliderRange(const_control_handle handle, int32* minValue, int32* maxValue) { *minValue = 0; *maxValue=100; }
 void API_Slider_GetSliderValue() { abort(); }
-void API_Slider_SetSliderPageSize() { logf("API_Slider_SetSliderPageSize");  }
-void API_Slider_SetSliderRange() { logf("API_Slider_SetSliderRange");  }
-void API_Slider_SetSliderTickInterval() { logf("API_Slider_SetSliderTickInterval");  }
-void API_Slider_SetSliderTickStyle() { logf("API_Slider_SetSliderTickStyle"); }
 api_bool API_SpinBox_SetSpinBoxValueUpdatedEventRoutine() { logf("API_SpinBox_SetSpinBoxValueUpdatedEventRoutine"); return api_true; }
 
+void API_Slider_SetSliderRange( control_handle h, int32 mn, int32 mx )
+{
+    if (auto* s = qobject_cast<QSlider*>(widgetFromHandle(h)))
+    {
+        s->setMinimum(mn);
+        s->setMaximum(mx);
+    }
+}
+
+void API_Slider_SetSliderPageSize( control_handle h, int32 page )
+{
+    if (auto* s = qobject_cast<QSlider*>(widgetFromHandle(h)))
+        s->setPageStep(page);
+}
+
+void API_Slider_SetSliderTickInterval( control_handle h, int32 interval )
+{
+    if (auto* s = qobject_cast<QSlider*>(widgetFromHandle(h)))
+        s->setTickInterval(interval);
+}
+
+void API_Slider_SetSliderTickStyle( control_handle h, int32 style )
+{
+    if (auto* s = qobject_cast<QSlider*>(widgetFromHandle(h)))
+    {
+        uint32 st = uint32(style);
+        QSlider::TickPosition pos = QSlider::NoTicks;
+
+        if (st & 0x01) pos = QSlider::TicksAbove;
+        if (st & 0x02) pos = QSlider::TicksBelow;
+        if (st & 0x03) pos = QSlider::TicksBothSides;
+
+        s->setTickPosition(pos);
+    }
+}
+  
 void API_View_GetViewById() { abort(); }
 void API_View_GetViewFullId() { abort(); }
 void API_View_GetViewId() { abort(); }
@@ -6347,11 +6751,6 @@ void API_Control_SetControlUpdatesEnabled() {  }
 api_bool API_Control_SetFileDragEventRoutine() { return api_true; }
 api_bool API_Control_SetFileDropEventRoutine() { return api_true; }
 api_bool API_Control_SetHideEventRoutine() { return api_true; }
-api_bool API_Control_SetShowEventRoutine()
-{
-  logf("API_Control_SetShowEventRoutine");
-  return api_true;
-}
 void API_Dialog_ExecuteOpenFileDialog() { abort(); }
 void API_Dialog_ExecuteOpenMultipleFilesDialog() { abort(); }
 void API_FileFormat_CreateFileFormatInstance() { abort(); }
@@ -6391,8 +6790,70 @@ void API_Numerical_FFTCreateRealTransformD() { abort(); }
 void API_Numerical_FFTDestroyTransform() { abort(); }
 void API_Numerical_FFTRealOptimizedLengthF() { abort(); }
 void API_Numerical_FFTRealTransformD() { abort(); }
-void API_ScrollBox_CreateScrollBoxViewport() { abort(); }
 void API_SharedImage_CreateImage() { abort(); }
+
+// ============================================================================
+// ScrollBox creation
+// ============================================================================
+
+control_handle API_ScrollBox_CreateScrollBox( api_handle module,
+                                              api_handle client,
+                                              control_handle parent,
+                                              uint32 /*flags*/ )
+{
+    // Reuse the generic helper that already wires parents correctly.
+    control_handle h = reinterpret_cast<control_handle>(
+        createControl<QScrollArea>( module, client, parent ) );
+
+    MockBase* b = get( h );
+    if ( !b || !b->widget )
+        return nullptr;
+
+    auto* scrollArea = qobject_cast<QScrollArea*>( b->widget );
+    if ( scrollArea )
+    {
+        // For the mock we keep it simple and resizable,  
+        // PCL’s flags are ignored here.
+        scrollArea->setWidgetResizable( true );
+    }
+
+    logf( "[Mock] CreateScrollBox handle=%p widget=%p parent=%p",
+          h, b->widget, parent );
+
+    return h;
+}
+
+control_handle API_ScrollBox_CreateScrollBoxViewport( control_handle scrollBox,
+                                                      api_handle client )
+{
+    MockBase* sb = get( scrollBox );
+    if ( !sb || !sb->widget )
+        return nullptr;
+
+    auto* scrollArea = qobject_cast<QScrollArea*>( sb->widget );
+    if ( !scrollArea )
+        return nullptr;
+
+    // Create a simple QWidget as the viewport contents
+    auto* b = new MockBase();
+    b->moduleHandle = sb->moduleHandle;
+    b->clientHandle = client;
+    b->isSizer      = false;
+    b->layout       = nullptr;
+    b->widget       = new QWidget( scrollArea );
+
+    // Register it in the global object map
+    control_handle viewportHandle = reinterpret_cast<control_handle>( b );
+    g_objects[ viewportHandle ] = std::unique_ptr<MockBase>( b );
+
+    // Attach to the scroll area
+    scrollArea->setWidget( b->widget );
+
+    logf( "[Mock] CreateScrollBoxViewport handle=%p parentScroll=%p widget=%p",
+          viewportHandle, scrollBox, b->widget );
+
+    return viewportHandle;
+}
 
 // ============================================================================
 // TreeBox Node State Functions
@@ -6849,36 +7310,91 @@ void API_TreeBox_SetTreeBoxNodeColTextColor(api_handle node,
     logf("[Mock] SetTreeBoxNodeColTextColor col=%d rgba=0x%08x", col, rgba);
 }
 
-// ============================================================================
-// TreeBox Event Handlers (Stubs)
-// ============================================================================
+api_bool API_TreeBox_SetTreeBoxNodeActivatedEventRoutine(
+    control_handle h,
+    api_handle /*client*/,
+    pcl::item_event_routine r)
+{
+    if (auto* b = get(h))
+    {
+        b->onTreeNodeActivated = r;
+
+        if (auto* t = treeFromHandle(h))
+        {
+            QObject::connect(t, &QTreeWidget::itemActivated,
+                             [b](QTreeWidgetItem* item, int){
+                if (b->onTreeNodeActivated)
+                {
+                    b->onTreeNodeActivated(
+                        reinterpret_cast<control_handle>(b),
+                        reinterpret_cast<control_handle>(b),
+                        reinterpret_cast<api_handle>(item));
+                }
+            });
+        }
+    }
+    return api_true;
+}
 
 api_bool API_TreeBox_SetTreeBoxCurrentNodeUpdatedEventRoutine(
     control_handle h,
-    api_handle client,
-    pcl::item_range_event_routine routine)
+    api_handle /*client*/,
+    pcl::item_event_routine r)
 {
-    logf("[Mock] SetTreeBoxCurrentNodeUpdatedEventRoutine");
+    if (auto* b = get(h))
+    {
+        b->onTreeNodeUpdated = r;
+
+        if (auto* t = treeFromHandle(h))
+        {
+            QObject::connect(t, &QTreeWidget::currentItemChanged,
+                             [b](QTreeWidgetItem* item, QTreeWidgetItem*){
+                if (b->onTreeNodeUpdated)
+                {
+                    b->onTreeNodeUpdated(
+                        reinterpret_cast<control_handle>(b),
+                        reinterpret_cast<control_handle>(b),
+                        reinterpret_cast<api_handle>(item));
+                }
+            });
+        }
+    }
     return api_true;
 }
 
-api_bool API_TreeBox_SetTreeBoxNodeActivatedEventRoutine(
+api_bool API_TreeBox_SetTreeBoxNodeSelectionUpdatedEventRoutine(
     control_handle h,
-    api_handle client,
-    pcl::item_value_event_routine routine)
+    api_handle /*client*/,
+    pcl::item_event_routine r)
 {
-    logf("[Mock] SetTreeBoxNodeActivatedEventRoutine");
+    if (auto* b = get(h))
+    {
+        b->onTreeSelectionUpdated = r;
+
+        if (auto* t = treeFromHandle(h))
+        {
+            QObject::connect(t, &QTreeWidget::itemSelectionChanged,
+                             [b,t](){
+                if (b->onTreeSelectionUpdated)
+                {
+                    auto items = t->selectedItems();
+                    QTreeWidgetItem* first =
+                        items.isEmpty() ? nullptr : items.first();
+
+                    b->onTreeSelectionUpdated(
+                        reinterpret_cast<control_handle>(b),
+                        reinterpret_cast<control_handle>(b),
+                        reinterpret_cast<api_handle>(first));
+                }
+            });
+        }
+    }
     return api_true;
 }
 
-api_bool API_TreeBox_SetTreeBoxNodeUpdatedEventRoutine(
-    control_handle h,
-    api_handle client,
-    pcl::item_value_event_routine routine)
-{
-    logf("[Mock] SetTreeBoxNodeUpdatedEventRoutine");
-    return api_true;
-}
+// ============================================================================
+// TreeBox Event Handlers (Stubs)
+// ============================================================================
 
 api_bool API_TreeBox_SetTreeBoxNodeEnteredEventRoutine(
     control_handle h,
@@ -6922,15 +7438,6 @@ api_bool API_TreeBox_SetTreeBoxNodeCollapsedEventRoutine(
     pcl::item_event_routine routine)
 {
     logf("[Mock] SetTreeBoxNodeCollapsedEventRoutine");
-    return api_true;
-}
-
-api_bool API_TreeBox_SetTreeBoxNodeSelectionUpdatedEventRoutine(
-    control_handle h,
-    api_handle client,
-    pcl::event_routine routine)
-{
-    logf("[Mock] SetTreeBoxNodeSelectionUpdatedEventRoutine");
     return api_true;
 }
 
