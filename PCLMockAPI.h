@@ -1,128 +1,193 @@
-/**
- * PCLMockAPI.h - Main header for the PCL mock API
- * 
- * This file provides the main interface for the PCL mock API, which
- * can be used to simulate the PCL API in test environments without
- * requiring the full PixInsight application.
- */
+// ===============================================================
+//  PCLMockAPI.h  —  Unified Mock PixInsight Core API (Header)
+// ===============================================================
+//  This header declares the subset of the PCL API required by
+//  your module diagnostic environment. All handle types are
+//  opaque void pointers. The implementation is in PCLMockAPI.cpp.
+//
+//  NOTES:
+//   • All controls & sizers use handle = void*
+//   • All widgets are QWidget* internally
+//   • Only APIs actually used by your module are declared here
+//   • Event routines are stubbed as function pointers
+//   • api_bool is int (0=false, 1=true)
+// ===============================================================
 
-#ifndef PCL_MOCK_API_H
-#define PCL_MOCK_API_H
+#pragma once
 
-#include <functional>
-#include <string>
+#include <cstdint>
+#include <QtWidgets>
 #include <pcl/api/APIDefs.h>
 #include <pcl/ProcessInterface.h>
-#include <QWidget>
 
-// Common PCL API types
-//typedef int api_bool;
-//const api_bool api_true = 1;
-//const api_bool api_false = 0;
-typedef unsigned int uint32;
+// ---------------------------------------------------------------
+// Basic Types
+// ---------------------------------------------------------------
 typedef void* api_handle;
+typedef void* control_handle;
+typedef void* label_handle;
+typedef void* edit_handle;
+typedef void* slider_handle;
+typedef void* button_handle;
+typedef void* combo_handle;
+typedef void* spin_handle;
+typedef void* sizer_handle;
 typedef void* thread_handle;
 
+// ---------------------------------------------------------------
+// Event Routine Typedefs (Stubs)
+// ---------------------------------------------------------------
+namespace pcl
+{
+    typedef void (*edit_event_routine)(api_handle receiver,
+                                       edit_handle edit,
+                                       const char16_t* text);
 
-// Mock file format structure
-struct MockFileFormat {
-    std::string name;
-    std::vector<std::string> extensions;
-    std::vector<std::string> mimeTypes;
-    uint32 version;
-    std::string description;
-    std::string implementation;
-    bool canRead;
-    bool canWrite;
-    bool canReadIncrementally;
-    bool canWriteIncrementally;
-    bool canStore8Bit;
-    bool canStore16Bit;
-    bool canStore32Bit;
-    bool canStore64Bit;
-    bool canStoreFloat;
-    bool canStoreDouble;
-    bool canStoreComplex;
-    bool canStoreDComplex;
-    bool canStoreGrayscale;
-    bool canStoreRGBColor;
-    bool canStoreAlphaChannels;
-    bool supportsCompression;
-    bool supportsMultipleImages;
-};
+    typedef void (*api_button_event_routine)(api_handle receiver,
+                                             button_handle btn);
 
-namespace pcl_mock {
+    typedef void (*api_slider_value_event_routine)(api_handle receiver,
+                                                   slider_handle slider,
+                                                   int value);
 
-// Function resolver type (matches PCL's definition)
-typedef void* (*function_resolver)(const char* name);
-
-/**
- * Initialize the mock API system
- * This must be called before using any mock API functions
- */
-void InitializeMockAPI();
-
-/**
- * Get the function resolver that can be used with pcl::APIInterface
- * @return A function resolver that provides mock implementations
- */
-function_resolver GetMockFunctionResolver();
-
-/**
- * Set the module handle to be used by the mock API
- * @param handle The module handle to use
- */
-void SetModuleHandle(void* handle);
-
-/**
- * Get the current module handle
- * @return The current module handle
- */
-void* GetModuleHandle();
-
-/**
- * Register a function with the mock API
- * @param name The name of the function (e.g. "Thread/CreateThread")
- * @param func A pointer to the function implementation
- */
-void RegisterFunction(const char* name, void* func);
- /**
- * Register GLobal API functions with the mock API
- */
-void RegisterGlobalFunctions();
- /**
- * Register UI API functions with the mock API
- */
-void RegisterUIFunctions();
- 
- /**
- * Register FileFormat API functions with the mock API
- */
-void RegisterFileFormatFunctions();
- 
- /**
- * Register SharedImage API functions with the mock API
- */
-void RegisterSharedImageFunctions();
-
-/**
- * Set the log file for debug output
- * @param filename The path to the log file
- */
-void SetLogFile(const std::string& filename);
-
-} // namespace pcl_mock
-
-extern "C" {
-  void SetDebugLogging(bool);
-  void SetModuleHandle(void *);
-  QWidget* FindInterfaceGuiRoot();
-  
-};
-
-// SpinBox event handler typedef
-namespace pcl {
-    typedef void (*spinbox_value_event_routine)(void* receiver, control_handle sender, int32 value);
+    typedef void (*api_spinbox_value_event_routine)(api_handle receiver,
+                                                    spin_handle spin,
+                                                    int value);
 }
 
-#endif // PCL_MOCK_API_H
+// ---------------------------------------------------------------
+// Core Creation APIs
+// ---------------------------------------------------------------
+
+extern "C" {
+void SetDebugLogging(bool);
+  
+control_handle API_Control_CreateControl(api_handle module);
+
+label_handle   API_Label_CreateLabel(api_handle module,
+                                     api_handle client,
+                                     control_handle parent);
+
+edit_handle    API_Edit_CreateEdit(api_handle module,
+                                   api_handle client,
+                                   control_handle parent);
+
+slider_handle  API_Slider_CreateSlider(api_handle module,
+                                       api_handle client,
+                                       control_handle parent);
+
+button_handle  API_Button_CreateCheckBox(api_handle module,
+                                         api_handle client,
+                                         control_handle parent);
+
+combo_handle   API_ComboBox_CreateComboBox(api_handle module,
+                                           api_handle client,
+                                           control_handle parent);
+
+spin_handle    API_SpinBox_CreateSpinBox(api_handle module,
+                                         api_handle client,
+                                         control_handle parent);
+
+// ---------------------------------------------------------------
+// Sizer APIs
+// ---------------------------------------------------------------
+sizer_handle API_Sizer_CreateSizer(api_handle module,
+                                   api_handle client,
+                                   api_bool vertical);
+
+api_bool API_Sizer_InsertSizerControl(sizer_handle sizer,
+                                      api_handle client,
+                                      control_handle child,
+                                      int index,
+                                      int stretch,
+                                      uint32 flags);
+
+api_bool API_Sizer_InsertSizer(sizer_handle sizer,
+                               api_handle client,
+                               sizer_handle childSizer,
+                               int index,
+                               int stretch,
+                               uint32 flags);
+
+api_bool API_Control_SetControlSizer(control_handle ctrl,
+                                     api_handle client,
+                                     sizer_handle sizer);
+
+// ---------------------------------------------------------------
+// Visibility / Sizing / Appearance
+// ---------------------------------------------------------------
+api_bool API_Control_SetControlVisible(control_handle ctrl,
+                                       api_handle client,
+                                       uint32 flags);
+
+api_bool API_Control_SetControlFixedSize(control_handle ctrl,
+                                         api_handle client,
+                                         int32 w,
+                                         int32 h);
+
+api_bool API_Control_SetControlMinSize(control_handle ctrl,
+                                       api_handle client,
+                                       int32 w,
+                                       int32 h);
+
+api_bool API_Control_SetControlBackgroundColor(control_handle ctrl,
+                                               api_handle client,
+                                               uint32 rgba);
+
+// ---------------------------------------------------------------
+// Type-specific Control APIs
+// ---------------------------------------------------------------
+api_bool API_ComboBox_SetEditable(control_handle ctrl,
+                                  api_handle client,
+                                  api_bool editable);
+
+api_bool API_Slider_SetSliderValue(control_handle ctrl,
+                                   api_handle client,
+                                   int value);
+
+api_bool API_SpinBox_SetSpinBoxRange(control_handle ctrl,
+                                     api_handle client,
+                                     int minValue,
+                                     int maxValue);
+
+api_bool API_SpinBox_SetSpinBoxValue(control_handle ctrl,
+                                     api_handle client,
+                                     int value);
+
+// ---------------------------------------------------------------
+// Event registration (stubs only)
+// ---------------------------------------------------------------
+api_bool API_Control_SetChildControlToFocus(control_handle ctrl,
+                                            api_handle client,
+                                            control_handle child);
+
+api_bool API_Control_SetControlFocusStyle(control_handle,
+                                          api_handle,
+                                          uint32 style);
+
+api_bool API_Edit_SetEditCompletedEventRoutine(edit_handle edit,
+                                               api_handle client,
+                                               api_handle receiver,
+                                               pcl::edit_event_routine);
+
+api_bool API_Edit_SetReturnPressedEventRoutine(edit_handle edit,
+                                               api_handle client,
+                                               api_handle receiver,
+                                               pcl::edit_event_routine);
+
+api_bool API_Slider_SetSliderValueUpdatedEventRoutine(slider_handle,
+                                                      api_handle,
+                                                      api_handle,
+                                                      pcl::api_slider_value_event_routine);
+
+api_bool API_Button_SetButtonClickEventRoutine(button_handle,
+                                               api_handle,
+                                               api_handle,
+                                               pcl::api_button_event_routine);
+
+api_bool API_SpinBox_SetValueUpdatedEventRoutine(spin_handle,
+                                                 api_handle,
+                                                 api_handle,
+                                                 pcl::api_spinbox_value_event_routine);
+
+};
