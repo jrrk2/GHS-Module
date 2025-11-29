@@ -35,6 +35,8 @@ struct MockBase
     bool         isSizer = false;
 
     api_handle   moduleHandle = nullptr;
+    control_handle pcl_handle = nullptr;
+  
     // Control event callbacks
     pcl::control_event_routine        onShow     = nullptr;
     pcl::mouse_event_routine          onMouseMove = nullptr;
@@ -130,8 +132,8 @@ protected:
             if (base->onKeyPress)
             {
                 auto* e = static_cast<QKeyEvent*>(ev);
-                base->onKeyPress(reinterpret_cast<control_handle>(base),
-                                 reinterpret_cast<control_handle>(base),
+                base->onKeyPress(base->pcl_handle,
+                                 base->pcl_handle,
                                  e->key(),
                                  QApplication::keyboardModifiers());
                 return false;
@@ -252,45 +254,31 @@ void* createControl(api_handle module, api_handle client, control_handle parent)
 {
     QWidget* parentWidget = nullptr;
 
-    // Determine the parent QWidget correctly
-    if (auto* p = get(parent))
-    {
+    if (auto* p = get(parent)) {
         if (!p->isSizer)
-        {
-            // Parent is a control → parent on its widget
             parentWidget = p->widget;
-        }
         else if (p->isSizer && p->layout)
-        {
-            // Parent is a sizer → we must attach to the sizer's parent widget
             parentWidget = p->layout->parentWidget();
-
-            // If the sizer has no parent widget, but the root window exists,
-            // then we attach controls to the root window by default.
-            if (!parentWidget && g_lastTopLevel && g_lastTopLevel->widget)
-            {
-                parentWidget = g_lastTopLevel->widget;
-            }
-        }
     }
 
-    // If still NULL, and root window exists → attach to root
     if (!parentWidget && g_lastTopLevel)
         parentWidget = g_lastTopLevel->widget;
 
-    // Finally create the QWidget
     auto* b = new MockBase();
     b->moduleHandle = module;
-    b->widget = new W(parentWidget);
+    b->pcl_handle   = client;            // Control* = control_handle
+    b->widget       = new W(parentWidget);
     b->widget->installEventFilter(new MockEventFilter(b));
 
-    void* h = reinterpret_cast<void*>(b);
+    // The *handle* used by PCL is the Control*
+    void* h = client;                    // ✔ handle == Control*
+
     g_objects[h] = std::unique_ptr<MockBase>(b);
 
     logf("[Mock] CreateControl %s handle=%p widget=%p parentWidget=%p",
          typeid(W).name(), h, b->widget, parentWidget);
 
-    return h;
+    return h;                            // ✔ Return Control*
 }
 
 control_handle ControlContext::GetControlWindow(const_control_handle handle)
@@ -342,18 +330,24 @@ control_handle ControlContext::CreateControl( api_handle module, api_handle clie
 {
     auto* b = new MockBase();
     b->moduleHandle = module;
-
-    // THIS IS THE ROOT WINDOW
-    b->widget = new QWidget(nullptr);     // real top-level window
-    b->widget->setWindowTitle("Mock Interface");
-
     control_handle h = reinterpret_cast<control_handle>(b);
+
+    if (parent == nullptr)
+      {
+	// THIS IS THE ROOT WINDOW
+	b->widget = new QWidget(nullptr);     // real top-level window
+	b->widget->setWindowTitle("Mock Interface");
+
+	// Last top-level control = this
+	g_lastTopLevel = b;
+
+	logf("[Mock] Create ROOT Control handle=%p widget=%p", h, b->widget);
+      }
+    else
+      {
+	b->widget = new QWidget(nullptr);     // real top-level window
+      }
     g_objects[h] = std::unique_ptr<MockBase>(b);
-
-    // Last top-level control = this
-    g_lastTopLevel = b;
-
-    logf("[Mock] Create ROOT Control handle=%p widget=%p", h, b->widget);
 
     return h;
 }
@@ -6819,6 +6813,16 @@ void ProcessDefinitionContext::SetProcessImageExecutionValidationRoutine(unsigne
 void ProcessDefinitionContext::SetProcessDefaultInterfaceSelectionRoutine(void const* (*)(void const*)) { abort(); }
 void ProcessDefinitionContext::SetProcessGlobalExecutionValidationRoutine(unsigned int (*)(void const*, unsigned short*, unsigned int)) { abort(); }
 const ::api_pixtraits_lut *GlobalContext::GetPixelTraitsLUT(unsigned int)  { return new api_pixtraits_lut; }
+
+void ViewContext::UnlockView(void*, unsigned int, unsigned int, unsigned int) { abort(); }
+view_handle ViewContext::GetViewById(char const*) { abort(); }
+void ViewContext::GetViewLocks(void const*, unsigned int*, unsigned int*) { abort(); }
+api_bool ViewContext::GetViewFullId(void const*, char*, unsigned long*) { abort(); }
+void ViewContext::LockView(void*, unsigned int, unsigned int, unsigned int) { abort(); }
+api_bool ViewContext::GetViewId(void const*, char*, unsigned long*) { abort(); }
+void ProcessDefinitionContext::DefineEnumerationAlias(char const*, char const*) { abort(); }
+void ProcessDefinitionContext::DefineEnumerationElement(char const*, int) { abort(); }
+void ProcessDefinitionContext::SetDefaultEnumerationValueIndex(unsigned int) { abort(); }
 
 /*
 void ViewContext::GetViewById() { abort(); }

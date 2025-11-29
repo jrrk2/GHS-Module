@@ -2,6 +2,7 @@
 #include <QApplication>
 
 #include <pcl/Console.h>
+#include <pcl/api/APIInterface.h>
 #include <pcl/MetaModule.h>
 #include "SandboxModule.h"
 #include "SandboxInterface.h"
@@ -23,6 +24,8 @@ int main( int argc, char** argv )
    // Simulate the PixInsight host calling Launch().
    bool dynamic = false;
    unsigned flags = 0;
+   API = new APIInterface(nullptr);
+   
    if ( !iface.Launch( proc, nullptr, dynamic, flags ) )
    {
       fputs( "Launch() returned false – interface did not accept the process.\n", stderr );
