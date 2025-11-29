@@ -24,13 +24,12 @@
 // Basic Types
 // ---------------------------------------------------------------
 typedef void* api_handle;
-typedef void* control_handle;
-typedef void* label_handle;
-typedef void* edit_handle;
-typedef void* slider_handle;
-typedef void* button_handle;
-typedef void* combo_handle;
-typedef void* spin_handle;
+typedef control_handle label_handle;
+typedef control_handle edit_handle;
+typedef control_handle slider_handle;
+typedef control_handle button_handle;
+typedef control_handle combo_handle;
+typedef control_handle spin_handle;
 typedef void* sizer_handle;
 typedef void* thread_handle;
 

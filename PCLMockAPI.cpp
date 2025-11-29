@@ -72,8 +72,8 @@ protected:
         if (ev->type() == QEvent::Show)
         {
             if (base->onShow)
-                base->onShow(reinterpret_cast<control_handle>(base),
-                              reinterpret_cast<control_handle>(base));
+                base->onShow(base->pcl_handle,
+                              base->pcl_handle);
         }
 
         // --- MOUSE MOVE ------------------------------------------------------
@@ -82,8 +82,8 @@ protected:
             if (base->onMouseMove)
             {
                 auto* e = static_cast<QMouseEvent*>(ev);
-                base->onMouseMove(reinterpret_cast<control_handle>(base),
-                                  reinterpret_cast<control_handle>(base),
+                base->onMouseMove(base->pcl_handle,
+                                  base->pcl_handle,
                                   e->x(),
                                   e->y(),
                                   e->buttons(),
@@ -98,8 +98,8 @@ protected:
             if (base->onMousePress)
             {
                 auto* e = static_cast<QMouseEvent*>(ev);
-                base->onMousePress(reinterpret_cast<control_handle>(base),
-                                   reinterpret_cast<control_handle>(base),
+                base->onMousePress(base->pcl_handle,
+                                   base->pcl_handle,
                                    e->x(),
                                    e->y(),
                                    e->button(),
@@ -115,8 +115,8 @@ protected:
             if (base->onMouseRelease)
             {
                 auto* e = static_cast<QMouseEvent*>(ev);
-                base->onMouseRelease(reinterpret_cast<control_handle>(base),
-                                     reinterpret_cast<control_handle>(base),
+                base->onMouseRelease(base->pcl_handle,
+                                     base->pcl_handle,
                                      e->x(),
                                      e->y(),
                                      e->button(),
@@ -132,10 +132,12 @@ protected:
             if (base->onKeyPress)
             {
                 auto* e = static_cast<QKeyEvent*>(ev);
-                base->onKeyPress(base->pcl_handle,
+		/*
+		  base->onKeyPress(base->pcl_handle,
                                  base->pcl_handle,
                                  e->key(),
                                  QApplication::keyboardModifiers());
+		*/
                 return false;
             }
         }
@@ -174,6 +176,14 @@ static MockBase* g_lastTopLevel = nullptr;
 // Utility: Lookup helper
 // =============================================================
 static inline MockBase* get(const void* h)
+{
+    if (!h)
+        return nullptr;
+    auto it = g_objects.find(h);
+    return (it == g_objects.end()) ? nullptr : it->second.get();
+}
+
+static inline MockBase* get(const_control_handle h)
 {
     if (!h)
         return nullptr;
@@ -250,15 +260,23 @@ static inline void logf(const char* fmt, ...)
 // =============================================================
 
 template <typename W>
-void* createControl(api_handle module, api_handle client, control_handle parent)
+control_handle createControl( api_handle module, api_handle client, control_handle parent )
 {
     QWidget* parentWidget = nullptr;
 
-    if (auto* p = get(parent)) {
+    // Determine parent widget from parent handle (parent is a control_handle)
+    if (auto* p = get( parent ))
+    {
         if (!p->isSizer)
+        {
             parentWidget = p->widget;
+        }
         else if (p->isSizer && p->layout)
+        {
             parentWidget = p->layout->parentWidget();
+            if (!parentWidget && g_lastTopLevel && g_lastTopLevel->widget)
+                parentWidget = g_lastTopLevel->widget;
+        }
     }
 
     if (!parentWidget && g_lastTopLevel)
@@ -266,19 +284,22 @@ void* createControl(api_handle module, api_handle client, control_handle parent)
 
     auto* b = new MockBase();
     b->moduleHandle = module;
-    b->pcl_handle   = client;            // Control* = control_handle
-    b->widget       = new W(parentWidget);
-    b->widget->installEventFilter(new MockEventFilter(b));
 
-    // The *handle* used by PCL is the Control*
-    void* h = client;                    // ✔ handle == Control*
+    // PCL "handle" is the Control* (client)
+    control_handle h = static_cast<control_handle>( client );
+    b->pcl_handle    = h;                  // if you keep this field
+    b->isSizer       = false;
 
-    g_objects[h] = std::unique_ptr<MockBase>(b);
+    b->widget = new W( parentWidget );
+    b->widget->installEventFilter( new MockEventFilter( b ) );
 
-    logf("[Mock] CreateControl %s handle=%p widget=%p parentWidget=%p",
-         typeid(W).name(), h, b->widget, parentWidget);
+    // Map Control* -> MockBase
+    g_objects[h] = std::unique_ptr<MockBase>( b );
 
-    return h;                            // ✔ Return Control*
+    logf( "[Mock] CreateControl %s handle=%p widget=%p parentWidget=%p",
+          typeid( W ).name(), h, b->widget, parentWidget );
+
+    return h;  // return Control*
 }
 
 control_handle ControlContext::GetControlWindow(const_control_handle handle)
@@ -727,7 +748,7 @@ api_bool ButtonContext::GetButtonText(const_control_handle h,
                                   char16_type* text, 
                                   size_type* len)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return api_false;
     
     QString qtext;
@@ -769,7 +790,7 @@ void ButtonContext::SetButtonText(control_handle h, const char16_type* text)
 
 bitmap_handle ButtonContext::GetButtonIcon(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return nullptr;
     
     if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
@@ -792,7 +813,7 @@ void ButtonContext::SetButtonIcon(control_handle h, const_bitmap_handle icon)
       /*
         if (icon) {
             QIcon* qicon = reinterpret_cast<QIcon*>(
-                const_cast<void*>(icon));
+                (icon));
             btn->setIcon(*qicon);
         } else {
             btn->setIcon(QIcon());
@@ -804,7 +825,7 @@ void ButtonContext::SetButtonIcon(control_handle h, const_bitmap_handle icon)
 
 void ButtonContext::GetButtonIconSize(const_control_handle h, int32* w, int32* h_out)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return;
     
     if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
@@ -831,7 +852,7 @@ void ButtonContext::SetButtonIconSize(control_handle h, int32 w, int32 h_size)
 
 api_bool ButtonContext::GetButtonPushed(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return api_false;
     
     if (auto* btn = qobject_cast<QAbstractButton*>(C->widget)) {
@@ -854,7 +875,7 @@ void ButtonContext::SetButtonPushed(control_handle h, api_bool pushed)
 
 uint32 ButtonContext::GetButtonChecked(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return 0;
     
     // Try QCheckBox first (supports tristate)
@@ -898,7 +919,7 @@ void ButtonContext::SetButtonChecked(control_handle h, uint32 state)
 
 api_bool ButtonContext::GetButtonDefaultEnabled(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return api_false;
     
     if (auto* btn = qobject_cast<QPushButton*>(C->widget)) {
@@ -921,7 +942,7 @@ void ButtonContext::SetButtonDefaultEnabled(control_handle h, api_bool enabled)
 
 api_bool ButtonContext::GetButtonTristateEnabled(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return api_false;
     
     if (auto* btn = qobject_cast<QCheckBox*>(C->widget)) {
@@ -944,7 +965,7 @@ void ButtonContext::SetButtonTristateEnabled(control_handle h, api_bool enabled)
 
 api_bool ButtonContext::GetToolButtonCheckable(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return api_false;
     
     if (auto* btn = qobject_cast<QToolButton*>(C->widget)) {
@@ -1077,7 +1098,7 @@ api_handle UIContext::GetUIObjectModule(const_api_handle object)
 {
     if (!object) return nullptr;
     
-    auto* C = get(const_cast<void*>(object));
+    auto* C = get((object));
     if (!C) return nullptr;
     
     return C->moduleHandle;
@@ -1087,7 +1108,7 @@ size_type UIContext::GetUIObjectRefCount(const_api_handle object)
 {
     if (!object) return 0;
     
-    auto* C = get(const_cast<void*>(object));
+    auto* C = get((object));
     if (!C) return 0;
     
     // In a real implementation, return actual reference count
@@ -1101,7 +1122,7 @@ api_bool UIContext::GetUIObjectType(const_api_handle object,
 {
     if (!object) return api_false;
     
-    auto* C = get(const_cast<void*>(object));
+    auto* C = get((object));
     if (!C) return api_false;
     
     const char* typeName = "Control";
@@ -1148,7 +1169,7 @@ api_bool UIContext::GetUIObjectId(const_api_handle object,
 {
     if (!object) return api_false;
     
-    auto* C = get(const_cast<void*>(object));
+    auto* C = get((object));
     if (!C || !C->widget) return api_false;
     
     QString objectName = C->widget->objectName();
@@ -1194,6 +1215,146 @@ api_bool UIContext::SetHandleDestroyedEventRoutine(api_handle object,
 }
 
 // ============================================================================
+// UI Object Management Functions
+// ============================================================================
+
+api_bool UIContext::AttachToUIControlObject(api_handle object, api_handle client)
+{
+    if (!object) return api_false;
+    
+    auto* C = get(object);
+    if (!C) return api_false;
+    
+    // In a real implementation, this would increment a reference count
+    // For the mock, we just log the attachment
+    logf("[Mock] UIContext::AttachToUIControlObject: object=%p client=%p", object, client);
+    
+    return api_true;
+}
+
+api_bool UIContext::DetachFromUIControlObject(api_handle object, api_handle client)
+{
+    if (!object) return api_false;
+    
+    auto* C = get(object);
+    if (!C) return api_false;
+    
+    // In a real implementation, this would decrement reference count
+    // and potentially destroy the object if count reaches zero
+    logf("[Mock] UIContext::DetachFromUIControlObject: object=%p client=%p", object, client);
+    
+    return api_true;
+}
+
+api_handle UIContext::GetUIControlObjectModule(const_api_handle object)
+{
+    if (!object) return nullptr;
+    
+    auto* C = get((object));
+    if (!C) return nullptr;
+    
+    return C->moduleHandle;
+}
+
+size_type UIContext::GetUIControlObjectRefCount(const_api_handle object)
+{
+    if (!object) return 0;
+    
+    auto* C = get((object));
+    if (!C) return 0;
+    
+    // In a real implementation, return actual reference count
+    // For the mock, we return 1 to indicate the object exists
+    return 1;
+}
+
+api_bool UIContext::GetUIControlObjectType(const_api_handle object, 
+                                char* type, 
+                                size_type* len)
+{
+    if (!object) return api_false;
+    
+    auto* C = get((object));
+    if (!C) return api_false;
+    
+    const char* typeName = "Control";
+    
+    if (C->isSizer) {
+        typeName = "Sizer";
+    } else if (C->widget) {
+        if (qobject_cast<QLabel*>(C->widget))
+            typeName = "Label";
+        else if (qobject_cast<QLineEdit*>(C->widget))
+            typeName = "Edit";
+        else if (qobject_cast<QSlider*>(C->widget))
+            typeName = "Slider";
+        else if (qobject_cast<QCheckBox*>(C->widget))
+            typeName = "CheckBox";
+        else if (qobject_cast<QRadioButton*>(C->widget))
+            typeName = "RadioButton";
+        else if (qobject_cast<QPushButton*>(C->widget))
+            typeName = "PushButton";
+        else if (qobject_cast<QToolButton*>(C->widget))
+            typeName = "ToolButton";
+        else if (qobject_cast<QComboBox*>(C->widget))
+            typeName = "ComboBox";
+        else if (qobject_cast<QSpinBox*>(C->widget))
+            typeName = "SpinBox";
+    }
+    
+    size_t typeLen = std::strlen(typeName);
+    
+    if (len) *len = typeLen;
+    
+    if (type && len && *len > 0) {
+        size_t copyLen = std::min(*len, typeLen);
+        std::memcpy(type, typeName, copyLen);
+        if (copyLen < *len) type[copyLen] = '\0';
+    }
+    
+    return api_true;
+}
+
+api_bool UIContext::GetUIControlObjectId(const_api_handle object, 
+                              char16_type* id, 
+                              size_type* len)
+{
+    if (!object) return api_false;
+    
+    auto* C = get((object));
+    if (!C || !C->widget) return api_false;
+    
+    QString objectName = C->widget->objectName();
+    
+    if (len) *len = objectName.length();
+    
+    if (id && len && *len > 0) {
+        const char16_type* src = reinterpret_cast<const char16_type*>(
+            objectName.utf16());
+        size_t copyLen = std::min(*len, static_cast<size_type>(objectName.length()));
+        std::memcpy(id, src, copyLen * sizeof(char16_t));
+        if (copyLen < *len) id[copyLen] = 0;
+    }
+    
+    return api_true;
+}
+
+api_bool UIContext::SetUIControlObjectId(api_handle object, const char16_type* id)
+{
+    if (!object || !id) return api_false;
+    
+    auto* C = get(object);
+    if (!C || !C->widget) return api_false;
+    
+    QString qid = QString::fromUtf16(id);
+    C->widget->setObjectName(qid);
+    
+    logf("[Mock] UIContext::SetUIControlObjectId: %s", qid.toUtf8().constData());
+    
+    return api_true;
+}
+
+// ============================================================================
 // BitmapBox API Implementation
 // ============================================================================
 // Add to PCLMockAPI.cpp
@@ -1223,7 +1384,7 @@ control_handle BitmapBoxContext::CreateBitmapBox(api_handle module,
 
 bitmap_handle BitmapBoxContext::GetBitmapBoxBitmap(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return nullptr;
     
     if (auto* label = qobject_cast<QLabel*>(C->widget)) {
@@ -1245,8 +1406,7 @@ void BitmapBoxContext::SetBitmapBoxBitmap(control_handle h,
     
     if (auto* label = qobject_cast<QLabel*>(C->widget)) {
         if (bitmap) {
-            QPixmap* pixmap = reinterpret_cast<QPixmap*>(
-                const_cast<void*>(bitmap));
+            const QPixmap* pixmap = reinterpret_cast<const QPixmap*>((bitmap));
             label->setPixmap(*pixmap);
         } else {
             label->clear();
@@ -1257,7 +1417,7 @@ void BitmapBoxContext::SetBitmapBoxBitmap(control_handle h,
 
 int32 BitmapBoxContext::GetBitmapBoxMargin(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return 0;
     
     if (auto* label = qobject_cast<QLabel*>(C->widget)) {
@@ -1280,7 +1440,7 @@ void BitmapBoxContext::SetBitmapBoxMargin(control_handle h, int32 margin)
 
 api_bool BitmapBoxContext::GetBitmapBoxAutoFitEnabled(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return api_false;
     
     if (auto* label = qobject_cast<QLabel*>(C->widget)) {
@@ -1405,7 +1565,7 @@ bitmap_handle BitmapContext::CloneBitmap(api_handle module,
 {
     if (!source) return nullptr;
     
-    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(source));
+    const QPixmap* src = reinterpret_cast<const QPixmap*>((source));
     QPixmap* clone = new QPixmap(*src);
     
     logf("[Mock] CloneBitmap");
@@ -1419,7 +1579,7 @@ bitmap_handle BitmapContext::CloneBitmapRect(api_handle module,
 {
     if (!source) return nullptr;
     
-    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(source));
+    const QPixmap* src = reinterpret_cast<const QPixmap*>((source));
     QPixmap* clone = new QPixmap(src->copy(x, y, w, h));
     
     logf("[Mock] CloneBitmapRect: %d,%d %dx%d", x, y, w, h);
@@ -1487,7 +1647,7 @@ int32 BitmapContext::GetBitmapFormat(bitmap_handle h)
 {
     if (!h) return 0;
     
-    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    const QPixmap* pixmap = reinterpret_cast<const QPixmap*>(h);
     return pixmap->depth();
 }
 
@@ -1502,7 +1662,7 @@ unsigned int* BitmapContext::GetBitmapScanLine(bitmap_handle h, int32 y)
 {
     if (!h) return nullptr;
     
-    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    const QPixmap* pixmap = reinterpret_cast<const QPixmap*>(h);
     QImage img = pixmap->toImage();
     
     if (y < 0 || y >= img.height()) return nullptr;
@@ -1516,7 +1676,7 @@ api_bool BitmapContext::GetBitmapDimensions(const_bitmap_handle h,
 {
     if (!h) return api_false;
     
-    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    const QPixmap* pixmap = reinterpret_cast<const QPixmap*>((h));
     
     if (width) *width = pixmap->width();
     if (height) *height = pixmap->height();
@@ -1528,7 +1688,7 @@ api_bool BitmapContext::IsEmptyBitmap(const_bitmap_handle h)
 {
     if (!h) return api_true;
     
-    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    const QPixmap* pixmap = reinterpret_cast<const QPixmap*>((h));
     return pixmap->isNull() ? api_true : api_false;
 }
 
@@ -1536,7 +1696,7 @@ uint32 BitmapContext::GetBitmapPixel(const_bitmap_handle h, int32 x, int32 y)
 {
     if (!h) return 0;
     
-    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    const QPixmap* pixmap = reinterpret_cast<const QPixmap*>((h));
     QImage img = pixmap->toImage();
     
     if (x < 0 || x >= img.width() || y < 0 || y >= img.height())
@@ -1568,7 +1728,7 @@ bitmap_handle BitmapContext::MirroredBitmap(const_bitmap_handle h,
 {
     if (!h) return nullptr;
     
-    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    const QPixmap* src = reinterpret_cast<const QPixmap*>((h));
     QTransform transform;
     
     if (horizontal) transform.scale(-1, 1);
@@ -1587,7 +1747,7 @@ bitmap_handle BitmapContext::ScaledBitmap(const_bitmap_handle h,
 {
     if (!h) return nullptr;
     
-    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    const QPixmap* src = reinterpret_cast<const QPixmap*>((h));
     Qt::TransformationMode mode = smooth ?
         Qt::SmoothTransformation : Qt::FastTransformation;
     
@@ -1604,7 +1764,7 @@ bitmap_handle BitmapContext::RotatedBitmap(const_bitmap_handle h,
 {
     if (!h) return nullptr;
     
-    QPixmap* src = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    const QPixmap* src = reinterpret_cast<const QPixmap*>((h));
     QTransform transform;
     transform.rotate(angle);
     
@@ -1642,7 +1802,7 @@ api_bool BitmapContext::SaveBitmap(const_bitmap_handle h,
 {
     if (!h || !filePath) return api_false;
     
-    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    const QPixmap* pixmap = reinterpret_cast<const QPixmap*>((h));
     QString path = QString::fromUtf16(filePath);
     
     bool result = pixmap->save(path, nullptr, quality);
@@ -1661,7 +1821,7 @@ api_bool BitmapContext::LoadBitmapData(bitmap_handle h,
 {
     if (!h || !data || size == 0) return api_false;
     
-    QPixmap* pixmap = reinterpret_cast<QPixmap*>(h);
+    QPixmap* pixmap = reinterpret_cast< QPixmap*>(h);
     QByteArray bytes(static_cast<const char*>(data), size);
     
     bool result = pixmap->loadFromData(bytes, format);
@@ -1685,7 +1845,7 @@ void BitmapContext::CopyBitmap(bitmap_handle dest,
     if (!dest || !src) return;
     
     QPixmap* dstPixmap = reinterpret_cast<QPixmap*>(dest);
-    QPixmap* srcPixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(src));
+    const QPixmap* srcPixmap = reinterpret_cast<const QPixmap*>((src));
     
     QPainter painter(dstPixmap);
     painter.drawPixmap(xDst, yDst, *srcPixmap, xSrc, ySrc, width, height);
@@ -1742,7 +1902,7 @@ void BitmapContext::OrBitmaps(bitmap_handle dest,
     if (!dest || !src) return;
     
     QPixmap* dstPixmap = reinterpret_cast<QPixmap*>(dest);
-    QPixmap* srcPixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(src));
+    const QPixmap* srcPixmap = reinterpret_cast<const QPixmap*>((src));
     
     QImage dstImg = dstPixmap->toImage();
     QImage srcImg = srcPixmap->toImage();
@@ -1798,7 +1958,7 @@ void BitmapContext::AndBitmaps(bitmap_handle dest,
     if (!dest || !src) return;
     
     QPixmap* dstPixmap = reinterpret_cast<QPixmap*>(dest);
-    QPixmap* srcPixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(src));
+    const QPixmap* srcPixmap = reinterpret_cast<const QPixmap*>((src));
     
     QImage dstImg = dstPixmap->toImage();
     QImage srcImg = srcPixmap->toImage();
@@ -1854,7 +2014,7 @@ void BitmapContext::XorBitmaps(bitmap_handle dest,
     if (!dest || !src) return;
     
     QPixmap* dstPixmap = reinterpret_cast<QPixmap*>(dest);
-    QPixmap* srcPixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(src));
+    const QPixmap* srcPixmap = reinterpret_cast<const QPixmap*>((src));
     
     QImage dstImg = dstPixmap->toImage();
     QImage srcImg = srcPixmap->toImage();
@@ -1945,7 +2105,7 @@ void BitmapContext::GetBitmapDevicePixelRatio(const_bitmap_handle h, double* rat
 {
     if (!h || !ratio) return;
     
-    QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(h));
+    const QPixmap* pixmap = reinterpret_cast<const QPixmap*>((h));
     *ratio = pixmap->devicePixelRatio();
 }
 
@@ -1966,7 +2126,7 @@ void ControlContext::SetChildControlToFocus(control_handle, control_handle) { re
 void ControlContext::SetControlFocusStyle(control_handle, int32) { return ; }
 api_bool EditContext::SetEditCompletedEventRoutine(control_handle, api_handle, pcl::event_routine) { return api_true; }
 api_bool EditContext::SetReturnPressedEventRoutine(control_handle, api_handle, pcl::event_routine) { return api_true; }
-api_bool SliderContext::SetSliderValueUpdatedEventRoutine(slider_handle, api_handle, pcl::api_slider_value_event_routine) { return api_true; }
+api_bool SliderContext::SetSliderValueUpdatedEventRoutine(control_handle, api_handle, pcl::value_event_routine) { return api_true; }
 api_bool SpinBoxContext::SetSpinBoxValueUpdatedEventRoutine(control_handle, api_handle, pcl::value_event_routine) { return api_true; }
 
 api_bool ImageWindowContext::LoadImageWindows(const char16_type* url, const char* id, const char* hints, api_bool asACopy, api_bool allowMessages, pcl::window_enumeration_callback, void*)
@@ -6696,11 +6856,11 @@ api_bool DialogContext::ExecuteOpenMultipleFilesDialog(unsigned short*, unsigned
 api_bool GlobalContext::GetGlobalFlag(char const*, unsigned int*) { abort(); }
 void GlobalContext::ProcessEvents(unsigned int) { abort(); }
 int32 GlobalContext::MaxProcessorsAllowedForModule(void*, unsigned int) { abort(); }
-control_handle ControlContext::GetControlParent(void const*) { abort(); }
-void ControlContext::SetControlMaxSize(void*, int, int) { abort(); }
-api_bool ControlContext::SetFileDragEventRoutine(void*, void*, unsigned int (*)(void*, void*, int, int, unsigned short const*, unsigned long const*, unsigned long, unsigned int)) { return api_true; }
-api_bool ControlContext::SetFileDropEventRoutine(void*, void*, unsigned int (*)(void*, void*, int, int, unsigned short const*, unsigned long const*, unsigned long, unsigned int)) { return api_true; }
-void ControlContext::SetControlUpdatesEnabled(void*, unsigned int) {  }
+control_handle ControlContext::GetControlParent(const_control_handle) { abort(); }
+void ControlContext::SetControlMaxSize(control_handle, int, int) { abort(); }
+api_bool ControlContext::SetFileDragEventRoutine(control_handle, api_handle, pcl::file_drag_event_handler) { return api_true; }
+api_bool ControlContext::SetFileDropEventRoutine(control_handle, api_handle, pcl::file_drag_event_handler) { return api_true; }
+void ControlContext::SetControlUpdatesEnabled(control_handle, unsigned int) {  }
 api_bool GraphicsContext::GetGraphicsStatus(void const*) { abort(); }
 void GraphicsContext::EndPaint(void*) { abort(); }
 api_bool NumericalContext::FFTRealTransformD(void*, void*, double const*) { abort(); }
@@ -7237,7 +7397,7 @@ void TreeBoxContext::SetTreeBoxNodeColIcon(api_handle node,
     QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
     
     if (icon) {
-        QPixmap* pixmap = reinterpret_cast<QPixmap*>(const_cast<void*>(icon));
+        const QPixmap* pixmap = reinterpret_cast<const QPixmap*>((icon));
         item->setIcon(col, QIcon(*pixmap));
     } else {
         item->setIcon(col, QIcon());
@@ -7335,7 +7495,7 @@ void TreeBoxContext::SetTreeBoxNodeColFont(api_handle node,
     QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
     
     if (font) {
-        QFont* qfont = reinterpret_cast<QFont*>(const_cast<void*>(font));
+        const QFont* qfont = reinterpret_cast<const QFont*>((font));
         item->setFont(col, *qfont);
     }
     
@@ -7469,7 +7629,7 @@ api_bool TreeBoxContext::SetTreeBoxNodeSelectionUpdatedEventRoutine(
 
                     b->onTreeSelectionUpdated(
                         reinterpret_cast<control_handle>(b),
-                        reinterpret_cast<api_handle>(first));
+                        reinterpret_cast<control_handle>(first));
                 }
             });
         }
@@ -7601,7 +7761,7 @@ void TreeBoxContext::ClearTreeBox(control_handle h)
 
 int32 TreeBoxContext::GetTreeBoxChildCount(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return 0;
     
     QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
@@ -7612,7 +7772,7 @@ int32 TreeBoxContext::GetTreeBoxChildCount(const_control_handle h)
 
 api_handle TreeBoxContext::GetTreeBoxChild(const_control_handle h, int32 idx)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return nullptr;
     
     QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
@@ -7635,13 +7795,13 @@ api_handle TreeBoxContext::GetTreeBoxChild(const_control_handle h, int32 idx)
 int32 TreeBoxContext::GetTreeBoxChildIndex(const_control_handle h,
                                        const_api_handle node)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget || !node) return -1;
     
     QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
     if (!tree) return -1;
     
-    auto it = g_objects.find(const_cast<void*>(node));
+    auto it = g_objects.find((node));
     if (it == g_objects.end()) return -1;
     
     QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
@@ -7688,7 +7848,7 @@ void TreeBoxContext::RemoveTreeBoxNode(control_handle h, int32 idx)
 
 api_handle TreeBoxContext::GetTreeBoxCurrentNode(const_control_handle h)
 {
-    auto* C = get(const_cast<void*>(h));
+    auto* C = get((h));
     if (!C || !C->widget) return nullptr;
     
     QTreeWidget* tree = qobject_cast<QTreeWidget*>(C->widget);
@@ -7830,7 +7990,7 @@ control_handle TreeBoxContext::GetTreeBoxNodeParentBox(const_api_handle node)
 {
     if (!node) return nullptr;
     
-    auto it = g_objects.find(const_cast<void*>(node));
+    auto it = g_objects.find((node));
     if (it == g_objects.end()) return nullptr;
     
     QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
@@ -7853,7 +8013,7 @@ api_handle TreeBoxContext::GetTreeBoxNodeParent(const_api_handle node)
 {
     if (!node) return nullptr;
     
-    auto it = g_objects.find(const_cast<void*>(node));
+    auto it = g_objects.find((node));
     if (it == g_objects.end()) return nullptr;
     
     QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
@@ -7876,7 +8036,7 @@ int32 TreeBoxContext::GetTreeBoxNodeChildCount(const_api_handle node)
 {
     if (!node) return 0;
     
-    auto it = g_objects.find(const_cast<void*>(node));
+    auto it = g_objects.find((node));
     if (it == g_objects.end()) return 0;
     
     QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
@@ -7887,7 +8047,7 @@ api_handle TreeBoxContext::GetTreeBoxNodeChild(const_api_handle node, int32 idx)
 {
     if (!node) return nullptr;
     
-    auto it = g_objects.find(const_cast<void*>(node));
+    auto it = g_objects.find((node));
     if (it == g_objects.end()) return nullptr;
     
     QTreeWidgetItem* item = reinterpret_cast<QTreeWidgetItem*>(it->second.get()->widget);
