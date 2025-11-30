@@ -9,7 +9,7 @@
 # Configuration ... Release/arm64
 ######################################################################
 
-MAIN=gradients_main
+MAIN=sandbox_main
 OBJ_DIR="arm64/Release"
 
 .PHONY: all
@@ -44,6 +44,7 @@ SRC_FILES= \
 ../../SandboxModule.cpp \
 ../../SandboxParameters.cpp \
 ../../SandboxProcess.cpp \
+../../QtUiExporter.cpp \
 
 #
 # Object files
@@ -66,11 +67,12 @@ OBJ_FILES= \
 ./arm64/Release/PCLMockAPI.o \
 ./arm64/Release/PCLThreadMock.o \
 ./arm64/Release/RgbPreserve.o \
-./arm64/Release//SandboxInstance.o \
-./arm64/Release//SandboxInterface.o \
-./arm64/Release//SandboxModule.o \
-./arm64/Release//SandboxParameters.o \
-./arm64/Release//SandboxProcess.o \
+./arm64/Release/SandboxInstance.o \
+./arm64/Release/SandboxInterface.o \
+./arm64/Release/SandboxModule.o \
+./arm64/Release/SandboxParameters.o \
+./arm64/Release/SandboxProcess.o \
+./arm64/Release/QtUiExporter.o \
 
 #
 # Dependency files
@@ -98,6 +100,7 @@ DEP_FILES= \
 ./arm64/Release//SandboxModule.d \
 ./arm64/Release//SandboxParameters.d \
 ./arm64/Release//SandboxProcess.d \
+./arm64/Release/QtUiExporter.d \
 
 #
 # Rules

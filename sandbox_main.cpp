@@ -8,6 +8,32 @@
 #include "SandboxInterface.h"
 #include "SandboxProcess.h"
 #include "PCLMockAPI.h"
+#include "QtUiExporter.h"
+#include <QFile>
+
+// Suppose this is your root container widget for the interface:
+QWidget* g_rootWidget; // set by your mock PCL
+
+void dumpUiAsQt(const QString& baseName = "GHSDialog")
+{
+    QtUiExportOptions opt;
+    opt.className   = baseName;
+    opt.baseClass   = "QWidget";
+    opt.rootVariable = "this";
+
+    QtUiExporter exporter(g_rootWidget, opt);
+
+    QFile hFile(baseName + ".h");
+    QFile cppFile(baseName + ".cpp");
+    hFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
+    cppFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
+
+    QTextStream hout(&hFile);
+    QTextStream cout(&cppFile);
+
+    exporter.writeHeader(hout);
+    exporter.writeSource(cout);
+}
 
 using namespace pcl;
 
@@ -36,6 +62,10 @@ int main( int argc, char** argv )
    // Here we do it ourselves.
    iface.Show();
 
+   g_rootWidget = g_lastTopLevel->widget;
+   
+   dumpUiAsQt();
+   
    // Enter the Qt event loop – all your GUI interactions and mock API calls happen from here.
    return app.exec();
 }

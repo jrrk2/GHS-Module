@@ -54,6 +54,37 @@ namespace pcl
                                                     int value);
 }
 
+// =============================================================
+// Mock Object: The only structure we need
+// =============================================================
+struct MockBase
+{
+    QWidget*     widget  = nullptr;   // QWidget* if control
+    QBoxLayout*  layout  = nullptr;   // QBoxLayout* if sizer
+    bool         isSizer = false;
+
+    api_handle   moduleHandle = nullptr;
+    control_handle pcl_handle = nullptr;
+  
+    // Control event callbacks
+    pcl::control_event_routine        onShow     = nullptr;
+    pcl::mouse_event_routine          onMouseMove = nullptr;
+    pcl::mouse_button_event_routine   onMousePress = nullptr;
+    pcl::mouse_button_event_routine   onMouseRelease = nullptr;
+    pcl::keyboard_event_routine       onKeyPress = nullptr;
+
+    // Button
+    pcl::button_click_event_routine   onButtonClick = nullptr;
+    pcl::button_check_event_routine   onButtonCheck = nullptr;
+
+    // TreeBox
+    pcl::item_value_event_routine     onTreeNodeActivated = nullptr;
+    pcl::item_range_event_routine     onTreeNodeUpdated = nullptr;
+    pcl::event_routine                onTreeSelectionUpdated = nullptr;
+};
+
+extern MockBase* g_lastTopLevel;
+
 // ---------------------------------------------------------------
 // Core Creation APIs
 // ---------------------------------------------------------------

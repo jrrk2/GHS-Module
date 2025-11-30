@@ -25,35 +25,6 @@ void SetDebugLogging( bool on )
    g_enableDebugLogging = on;
 }
 
-// =============================================================
-// Mock Object: The only structure we need
-// =============================================================
-struct MockBase
-{
-    QWidget*     widget  = nullptr;   // QWidget* if control
-    QBoxLayout*  layout  = nullptr;   // QBoxLayout* if sizer
-    bool         isSizer = false;
-
-    api_handle   moduleHandle = nullptr;
-    control_handle pcl_handle = nullptr;
-  
-    // Control event callbacks
-    pcl::control_event_routine        onShow     = nullptr;
-    pcl::mouse_event_routine          onMouseMove = nullptr;
-    pcl::mouse_button_event_routine   onMousePress = nullptr;
-    pcl::mouse_button_event_routine   onMouseRelease = nullptr;
-    pcl::keyboard_event_routine       onKeyPress = nullptr;
-
-    // Button
-    pcl::button_click_event_routine   onButtonClick = nullptr;
-    pcl::button_check_event_routine   onButtonCheck = nullptr;
-
-    // TreeBox
-    pcl::item_value_event_routine     onTreeNodeActivated = nullptr;
-    pcl::item_range_event_routine     onTreeNodeUpdated = nullptr;
-    pcl::event_routine                onTreeSelectionUpdated = nullptr;
-};
-
 class MockEventFilter : public QObject
 {
 public:
@@ -170,7 +141,7 @@ struct HandleEqual
 };
 
 static std::unordered_map<const void*, std::unique_ptr<MockBase>, HandleHash<control_handle>, HandleEqual<control_handle>> g_objects;
-static MockBase* g_lastTopLevel = nullptr;
+MockBase* g_lastTopLevel = nullptr;
 
 // =============================================================
 // Utility: Lookup helper
@@ -506,15 +477,8 @@ inline int sanitizePCLWidth(int v, QWidget* w)
 inline int sanitizePCLHeight(int v, QWidget* w)
 {
   int prev = w->sizeHint().height();
-  if (prev <= 0) prev = 100;
-  // case 1: unspecified
+  if (prev <= 0) prev = 0;
   if (v <= 0) return prev;
-
-  // case 2: absurd PCL logical pixel or garbage
-  if (v > 5000)          // PI often sends values like 152992 or 427520 or 1876937448
-    return prev;
-
-  // case 3: reasonable direct pixel size
   return v;
 }
 
@@ -1082,10 +1046,10 @@ api_bool UIContext::AttachToUIObject(api_handle object, api_handle client)
 
 api_bool UIContext::DetachFromUIObject(api_handle object, api_handle client)
 {
-    if (!object) return api_false;
+    if (!object) return api_true;
     
     auto* C = get(object);
-    if (!C) return api_false;
+    if (!C) return api_true;
     
     // In a real implementation, this would decrement reference count
     // and potentially destroy the object if count reaches zero
@@ -1234,10 +1198,10 @@ api_bool UIContext::AttachToUIControlObject(api_handle object, api_handle client
 
 api_bool UIContext::DetachFromUIControlObject(api_handle object, api_handle client)
 {
-    if (!object) return api_false;
+    if (!object) return api_true;
     
     auto* C = get(object);
-    if (!C) return api_false;
+    if (!C) return api_true;
     
     // In a real implementation, this would decrement reference count
     // and potentially destroy the object if count reaches zero
