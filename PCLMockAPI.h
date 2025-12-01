@@ -83,7 +83,7 @@ struct MockBase
     pcl::event_routine                onTreeSelectionUpdated = nullptr;
 };
 
-extern MockBase* g_lastTopLevel;
+extern QList<MockBase*> g_topLevelWidgets;  // All candidates!
 
 // ---------------------------------------------------------------
 // Core Creation APIs

@@ -402,7 +402,14 @@ void QtUiExporterEnhanced::writeHeader(QTextStream& out)
     out << "class QSpinBox;\n";
     out << "class QCheckBox;\n";
     out << "class QComboBox;\n";
-    out << "class QPushButton;\n\n";
+    out << "class QPushButton;\n";
+    out << "class QSlider;\n";
+    out << "class QGroupBox;\n";
+    out << "class QRadioButton;\n";
+    out << "class QToolButton;\n";
+    out << "class QTextEdit;\n";
+    out << "class QTreeWidget;\n";
+    out << "class QTabWidget;\n\n";
     out << "class QSlider;\n\n";
     
     out << "class " << m_opt.className << " : public " << m_opt.baseClass << "\n";
@@ -588,10 +595,34 @@ void QtUiExporterEnhanced::generateSignalConnections(QTextStream& out, int level
         QString slot = mapWidgetToSlot(v.typeName);
         
         if (!signal.isEmpty() && !slot.isEmpty()) {
-            out << indent(level)
-                << "connect(" << v.varName << ", &" << v.typeName 
-                << "::" << signal << ", this, &" << m_opt.className 
-                << "::" << slot << ");\n";
+            // Check if this is an overloaded signal that needs disambiguation
+            bool needsOverloadCast = false;
+            QString signalType;
+            
+            if (v.typeName == "QSpinBox" && signal == "valueChanged") {
+                needsOverloadCast = true;
+                signalType = "int";
+            } else if (v.typeName == "QDoubleSpinBox" && signal == "valueChanged") {
+                needsOverloadCast = true;
+                signalType = "double";
+            } else if (v.typeName == "QComboBox" && signal == "currentIndexChanged") {
+                needsOverloadCast = true;
+                signalType = "int";
+            }
+            
+            if (needsOverloadCast) {
+                // Use qOverload for overloaded signals
+                out << indent(level)
+                    << "connect(" << v.varName << ", qOverload<" << signalType 
+                    << ">(&" << v.typeName << "::" << signal << "), this, &" 
+                    << m_opt.className << "::" << slot << ");\n";
+            } else {
+                // Regular signal connection
+                out << indent(level)
+                    << "connect(" << v.varName << ", &" << v.typeName 
+                    << "::" << signal << ", this, &" << m_opt.className 
+                    << "::" << slot << ");\n";
+            }
         }
     }
 }

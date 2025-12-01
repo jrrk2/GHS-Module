@@ -22,6 +22,7 @@
 #include "SandboxProcess.h"
 #include "PCLMockAPI.h"
 #include "ExportHelper.h"
+#include "RootWidgetSelector.h"
 
 using namespace pcl;
 
@@ -256,9 +257,17 @@ int main(int argc, char** argv)
 
     iface.Show();
 
-    QWidget* rootWidget = g_lastTopLevel->widget;
+    QList<QWidget*> candidates;
+    for (MockBase* base : g_topLevelWidgets) {
+        if (base && base->widget) {
+            candidates.append(base->widget);
+        }
+    }
     
-    if (!rootWidget) {
+    // Smart selection!
+    QWidget* bestRoot = RootWidgetSelector::selectBestRoot(candidates, true);
+    
+    if (!bestRoot) {
         fputs("Error: No root widget!\n", stderr);
         return 1;
     }
@@ -267,11 +276,8 @@ int main(int argc, char** argv)
     QApplication::processEvents();
     QThread::msleep(200);
     QApplication::processEvents();
-    /*    
-    // Export the broken hierarchy first (for comparison)
-    Console().WriteLn("<end><cbr>Exporting original (broken) hierarchy...");
-    ExportHelper::exportInterface(rootWidget, "SandboxDialog_Broken", "./exported");
-    */
+    ExportHelper::exportInterface(bestRoot, "SandboxDialog", "./exported");
+    /*
     // Reconstruct the interface properly
     Console().WriteLn("<end><cbr><br>Reconstructing proper interface...");
     QWidget* reconstructed = reconstructInterface(rootWidget);
@@ -291,4 +297,5 @@ int main(int argc, char** argv)
     reconstructed->show();
     
     return app.exec();
+    */
 }

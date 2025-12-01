@@ -141,7 +141,8 @@ struct HandleEqual
 };
 
 static std::unordered_map<const void*, std::unique_ptr<MockBase>, HandleHash<control_handle>, HandleEqual<control_handle>> g_objects;
-MockBase* g_lastTopLevel = nullptr;
+
+QList<MockBase*> g_topLevelWidgets;  // All candidates!
 
 // =============================================================
 // Utility: Lookup helper
@@ -230,31 +231,42 @@ static inline void logf(const char* fmt, ...)
 //  NEW CONTROL CREATION TEMPLATE — FIXED
 // =============================================================
 
+QWidget* determineParentWidget(control_handle parent)
+{
+    if (!parent) {
+        return nullptr;  // Top-level widget
+    }
+    
+    MockBase* p = get(parent);
+    if (!p) {
+        return nullptr;
+    }
+    
+    // Parent is a widget
+    if (!p->isSizer && p->widget) {
+        return p->widget;
+    }
+    
+    // Parent is a layout - use layout's parent widget
+    if (p->isSizer && p->layout) {
+        return p->layout->parentWidget();  // May be nullptr, that's OK
+    }
+    
+    return nullptr;
+}
+
 template <typename W>
 control_handle createControl( api_handle module, api_handle client, control_handle parent )
 {
-    QWidget* parentWidget = nullptr;
-
-    // Determine parent widget from parent handle (parent is a control_handle)
-    if (auto* p = get( parent ))
-    {
-        if (!p->isSizer)
-        {
-            parentWidget = p->widget;
-        }
-        else if (p->isSizer && p->layout)
-        {
-            parentWidget = p->layout->parentWidget();
-            if (!parentWidget && g_lastTopLevel && g_lastTopLevel->widget)
-                parentWidget = g_lastTopLevel->widget;
-        }
-    }
-
-    if (!parentWidget && g_lastTopLevel)
-        parentWidget = g_lastTopLevel->widget;
-
     auto* b = new MockBase();
     b->moduleHandle = module;
+    QWidget* parentWidget = determineParentWidget(parent);
+    b->widget = new QWidget(parentWidget);
+
+    // Track top-level widgets
+    if (!parentWidget) {
+	g_topLevelWidgets.append(b);
+    }
 
     // PCL "handle" is the Control* (client)
     control_handle h = static_cast<control_handle>( client );
@@ -267,8 +279,7 @@ control_handle createControl( api_handle module, api_handle client, control_hand
     // Map Control* -> MockBase
     g_objects[h] = std::unique_ptr<MockBase>( b );
 
-    logf( "[Mock] CreateControl %s handle=%p widget=%p parentWidget=%p",
-          typeid( W ).name(), h, b->widget, parentWidget );
+    logf("[Mock] CreateControl parent_handle=%p parentWidget=%p", parent, parentWidget);
 
     return h;  // return Control*
 }
@@ -318,30 +329,36 @@ sizer_handle SizerContext::CreateSizer(api_handle module,  api_bool vertical)
 //  Control Creation Wrappers
 // =============================================================
 
-control_handle ControlContext::CreateControl( api_handle module, api_handle client, control_handle parent, uint32 flags )
+control_handle ControlContext::CreateControl(
+    api_handle module,
+    api_handle client,
+    control_handle parent,
+    uint32 flags
+)
 {
-    auto* b = new MockBase();
-    b->moduleHandle = module;
-    control_handle h = reinterpret_cast<control_handle>(b);
-
-    if (parent == nullptr)
-      {
-	// THIS IS THE ROOT WINDOW
-	b->widget = new QWidget(nullptr);     // real top-level window
-	b->widget->setWindowTitle("Mock Interface");
-
-	// Last top-level control = this
-	g_lastTopLevel = b;
-
-	logf("[Mock] Create ROOT Control handle=%p widget=%p", h, b->widget);
-      }
-    else
-      {
-	b->widget = new QWidget(nullptr);     // real top-level window
-      }
-    g_objects[h] = std::unique_ptr<MockBase>(b);
-
-    return h;
+    MockBase* b = new MockBase();
+    b->isSizer = false;
+    
+    // FIX: Determine parent properly
+    QWidget* parentWidget = nullptr;
+    if (parent) {
+        MockBase* p = get(parent);
+        if (p && !p->isSizer && p->widget) {
+            parentWidget = p->widget;
+        } else if (p && p->isSizer && p->layout) {
+            parentWidget = p->layout->parentWidget();
+        }
+    }
+    
+    // Use actual parent, not always nullptr!
+    b->widget = new QWidget(parentWidget);
+    
+    // Only track true top-levels
+    if (parent == nullptr) {
+        g_topLevelWidgets.append(b);
+    }
+    
+    return (control_handle)b;
 }
   
 control_handle LabelContext::CreateLabel( api_handle m, api_handle c, const char16_type*, control_handle parent, uint32 flags)
@@ -434,12 +451,12 @@ void           (SizerContext::InsertSizer)( sizer_handle s, int32 index, sizer_h
 // =============================================================
    void           (ControlContext::SetControlVisible)( control_handle h, api_bool visible)
 {
-    MockBase* C = nullptr;
+    if (!h) {
+        qWarning() << "[SetControlVisible] NULL handle - ignoring";
+        return;
+    }
 
-    if (h)
-        C = get(h);
-    else
-        C = g_lastTopLevel;
+    MockBase* C = get(h);
 
     if (!C || !C->widget)
         return ;
