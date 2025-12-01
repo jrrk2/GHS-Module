@@ -403,6 +403,7 @@ void QtUiExporterEnhanced::writeHeader(QTextStream& out)
     out << "class QCheckBox;\n";
     out << "class QComboBox;\n";
     out << "class QPushButton;\n\n";
+    out << "class QSlider;\n\n";
     
     out << "class " << m_opt.className << " : public " << m_opt.baseClass << "\n";
     out << "{\n";

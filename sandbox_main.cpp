@@ -267,11 +267,11 @@ int main(int argc, char** argv)
     QApplication::processEvents();
     QThread::msleep(200);
     QApplication::processEvents();
-    
+    /*    
     // Export the broken hierarchy first (for comparison)
     Console().WriteLn("<end><cbr>Exporting original (broken) hierarchy...");
     ExportHelper::exportInterface(rootWidget, "SandboxDialog_Broken", "./exported");
-    
+    */
     // Reconstruct the interface properly
     Console().WriteLn("<end><cbr><br>Reconstructing proper interface...");
     QWidget* reconstructed = reconstructInterface(rootWidget);

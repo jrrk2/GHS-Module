@@ -4,6 +4,7 @@
 
 #include <QWidget>
 #include <QString>
+#include <QTextStream>
 
 /**
  * Convenience helper to export a PCL interface to Qt C++ code
@@ -40,4 +41,10 @@ public:
      * Quick export for testing - uses default names
      */
     static bool quickExport(QWidget* widget);
+
+private:
+    static void generateCMakeLists(QTextStream& out, const QString& baseName);
+    static void generateMainCpp(QTextStream& out, const QString& baseName);
+    static void generateReadme(QTextStream& out, const QString& baseName, const QString& outputDir);
+    static QString detectQtPath();
 };
