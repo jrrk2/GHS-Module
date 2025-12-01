@@ -45,6 +45,7 @@ SRC_FILES= \
 ../../SandboxParameters.cpp \
 ../../SandboxProcess.cpp \
 ../../QtUiExporter.cpp \
+../../ExportHelper.cpp \
 
 #
 # Object files
@@ -73,6 +74,7 @@ OBJ_FILES= \
 ./arm64/Release/SandboxParameters.o \
 ./arm64/Release/SandboxProcess.o \
 ./arm64/Release/QtUiExporter.o \
+./arm64/Release/ExportHelper.o \
 
 #
 # Dependency files
@@ -101,6 +103,7 @@ DEP_FILES= \
 ./arm64/Release//SandboxParameters.d \
 ./arm64/Release//SandboxProcess.d \
 ./arm64/Release/QtUiExporter.d \
+./arm64/Release/ExportHelper.d \
 
 #
 # Rules

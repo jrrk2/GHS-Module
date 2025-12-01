@@ -6664,7 +6664,7 @@ api_bool GlobalContext::BrowseProcessDocumentation(meta_process_handle, uint32 f
 api_bool GlobalContext::Deallocate(void *) { abort(); }
 api_bool GlobalContext::EnableAbort() { abort(); }
 api_bool GlobalContext::ErrorMessage(uint32, char16_type*, size_type*) { abort(); }
-console_handle GlobalContext::GetConsole() { abort(); }
+console_handle GlobalContext::GetConsole() { return (new MockBase()); }
 api_bool GlobalContext::GetGlobalInteger(const char*, void*, api_bool isSigned) { abort(); }
 uint32 GlobalContext::GetKeyboardModifiers() { abort(); }
 uint32 GlobalContext::GetProcessStatus() { abort(); }
@@ -6680,7 +6680,7 @@ api_bool    (GlobalContext::ReadSettingsInteger)( api_handle, int32*rslt, const 
 }
 
 api_bool GlobalContext::ShowConsole(console_handle, api_bool ) { abort(); }
-api_bool GlobalContext::WriteConsole(console_handle, const char16_type*, api_bool appendNewline ) { abort(); }
+api_bool GlobalContext::WriteConsole(console_handle, const char16_type*, api_bool appendNewline ) { return api_true; }
 api_bool GlobalContext::WriteSettingsInteger( api_handle, int32, const char* key, api_bool global ) { abort(); }
 
 void LabelContext::SetLabelText( control_handle h, const char16_type* t )
