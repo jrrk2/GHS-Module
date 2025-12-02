@@ -637,11 +637,19 @@ void QtUiExporterEnhanced::genWidgetCtor(QWidget* w, QTextStream& out, int level
     const VarInfo& v = it.value();
     QString parentName = m_opt.rootVariable;
 
-    // Determine parent
-    if (w->parentWidget() && w->parentWidget() != m_root) {
-        auto pit = m_vars.constFind(w->parentWidget());
-        if (pit != m_vars.cend()) {
+    // FIX: Determine the ACTUAL parent widget, not just m_root
+    if (w->parentWidget()) {
+        // First check if parent has a layout - if so, we want the parent widget
+        QWidget* actualParent = w->parentWidget();
+        
+        // If the parent widget has a variable name, use it
+        auto pit = m_vars.constFind(actualParent);
+        if (pit != m_vars.cend() && !pit.value().isLayout) {
             parentName = pit.value().varName;
+        }
+        // Otherwise if parent is root, use rootVariable
+        else if (actualParent == m_root) {
+            parentName = m_opt.rootVariable;
         }
     }
 
@@ -668,6 +676,22 @@ void QtUiExporterEnhanced::genWidgetCtor(QWidget* w, QTextStream& out, int level
             out << parentName;
         }
     }
+    else if (auto* cb = qobject_cast<QCheckBox*>(w)) {
+        if (!cb->text().isEmpty()) {
+            out << "QStringLiteral(\"" << cb->text().toHtmlEscaped() 
+                << "\"), " << parentName;
+        } else {
+            out << parentName;
+        }
+    }
+    else if (auto* rb = qobject_cast<QRadioButton*>(w)) {
+        if (!rb->text().isEmpty()) {
+            out << "QStringLiteral(\"" << rb->text().toHtmlEscaped() 
+                << "\"), " << parentName;
+        } else {
+            out << parentName;
+        }
+    }
     else {
         out << parentName;
     }
@@ -675,6 +699,11 @@ void QtUiExporterEnhanced::genWidgetCtor(QWidget* w, QTextStream& out, int level
     out << ");\n";
 
     emitWidgetProperties(w, v.varName, out, level);
+    
+    // FIX: If this widget has a layout, generate it immediately after creating the widget
+    if (w->layout()) {
+        genLayoutCtor(w->layout(), out, level, v.varName);
+    }
 }
 
 void QtUiExporterEnhanced::emitWidgetProperties(QWidget* w, const QString& varName,
@@ -796,6 +825,9 @@ void QtUiExporterEnhanced::emitSpecificWidgetProps(QWidget* w, const QString& va
 void QtUiExporterEnhanced::genLayoutCtor(QLayout* layout, QTextStream& out,
                                         int level, const QString& parentWidgetVar)
 {
+    qDebug() << "genLayoutCtor called with layout" << (layout ? qtTypeName(layout) : "NULL") 
+             << "parentWidgetVar=" << parentWidgetVar;
+    
     if (!layout) return;
 
     auto it = m_vars.constFind(layout);
@@ -807,12 +839,18 @@ void QtUiExporterEnhanced::genLayoutCtor(QLayout* layout, QTextStream& out,
         out << indent(level) << "// Create layout: " << v.varName << "\n";
     }
 
-    out << indent(level) << v.varName << " = new " << v.typeName << "();\n";
+    // Only set parent if we have a parent widget variable
+    if (!parentWidgetVar.isEmpty() && parentWidgetVar != m_opt.rootVariable) {
+        out << indent(level) << v.varName << " = new " << v.typeName << "(" 
+            << parentWidgetVar << ");\n";
+    } else {
+        out << indent(level) << v.varName << " = new " << v.typeName << "();\n";
+    }
 
     emitLayoutProperties(layout, v.varName, out, level);
 
-    // Set as root layout if appropriate
-    if (parentWidgetVar == m_opt.rootVariable) {
+    // Set as root layout only if this is THE root layout
+    if (parentWidgetVar == m_opt.rootVariable && layout == m_root->layout()) {
         out << indent(level) << parentWidgetVar << "->setLayout(" << v.varName << ");\n";
     }
 
@@ -843,13 +881,18 @@ void QtUiExporterEnhanced::emitLayoutProperties(QLayout* layout,
     }
 }
 
+
+
 void QtUiExporterEnhanced::handleLayoutChildren(QLayout* layout,
                                                const QString& layoutVarName,
                                                QTextStream& out, int level)
 {
+    qDebug() << "Processing layout" << layoutVarName << "with" << layout->count() << "items";
+
     for (int i = 0; i < layout->count(); ++i) {
         QLayoutItem* item = layout->itemAt(i);
-        
+        qDebug() << "  Item" << i << ":" << (item->widget() ? "widget" : item->layout() ? "layout" : "spacer");
+       
         if (QWidget* w = item->widget()) {
             genWidgetCtor(w, out, level);
             auto vit = m_vars.constFind(w);
@@ -859,9 +902,11 @@ void QtUiExporterEnhanced::handleLayoutChildren(QLayout* layout,
             }
         }
         else if (QLayout* l = item->layout()) {
-            genLayoutCtor(l, out, level, m_opt.rootVariable);
+	  qDebug() << "    -> Generating child layout code for" << qtTypeName(l);
+	  genLayoutCtor(l, out, level, "");
             auto vit = m_vars.constFind(l);
             if (vit != m_vars.cend()) {
+	        qDebug() << "    -> Adding layout" << vit.value().varName << "to parent";
                 out << indent(level) << layoutVarName << "->addLayout("
                     << vit.value().varName << ");\n";
             }
