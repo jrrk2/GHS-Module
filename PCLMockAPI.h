@@ -61,10 +61,12 @@ struct MockBase
 {
     QWidget*     widget  = nullptr;   // QWidget* if control
     QBoxLayout*  layout  = nullptr;   // QBoxLayout* if sizer
+    bool vertical = false;          // <-- REQUIRED
     bool         isSizer = false;
 
     api_handle   moduleHandle = nullptr;
     control_handle pcl_handle = nullptr;
+    control_handle eventReceiver = nullptr;
   
     // Control event callbacks
     pcl::control_event_routine        onShow     = nullptr;

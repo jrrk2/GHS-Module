@@ -180,7 +180,13 @@ static QWidget* widgetFromHandle( control_handle h )
 
 static QWidget* widgetFromHandle( const_control_handle h )
 {
-    return widgetFromHandle(const_cast<control_handle>(h));
+    if (!h)
+        return nullptr;
+
+    if (MockBase* b = get(h))
+        return b->widget;
+
+    return nullptr;
 }
 
 static QBoxLayout* layoutFromSizer( sizer_handle s )
@@ -255,33 +261,47 @@ QWidget* determineParentWidget(control_handle parent)
     return nullptr;
 }
 
-template <typename W>
-control_handle createControl( api_handle module, api_handle client, control_handle parent )
+// Convert a MockBase sizer into a QLayout
+static QLayout* toLayout(MockBase* b)
 {
-    auto* b = new MockBase();
-    b->moduleHandle = module;
-    QWidget* parentWidget = determineParentWidget(parent);
-    b->widget = new QWidget(parentWidget);
+    if (!b) return nullptr;
 
-    // Track top-level widgets
-    if (!parentWidget) {
-	g_topLevelWidgets.append(b);
+    if (!b->layout)
+    {
+        if (b->vertical)
+            b->layout = new QVBoxLayout();
+        else
+            b->layout = new QHBoxLayout();
+    }
+    return b->layout;
+}
+
+template <class T>
+control_handle createControl(api_handle module, api_handle client, control_handle parent)
+{
+    QWidget* parentWidget = nullptr;
+    if (parent)
+    {
+        auto* pb = reinterpret_cast<MockBase*>(parent);
+        parentWidget = pb->widget;
     }
 
-    // PCL "handle" is the Control* (client)
-    control_handle h = static_cast<control_handle>( client );
-    b->pcl_handle    = h;                  // if you keep this field
-    b->isSizer       = false;
+    // Create Qt widget
+    T* w = new T(parentWidget);
 
-    b->widget = new W( parentWidget );
-    b->widget->installEventFilter( new MockEventFilter( b ) );
+    // Make a new MockBase object to track this
+    auto* b = new MockBase();
+    b->isSizer = false;
+    b->moduleHandle = module;
+    b->widget = w;
 
-    // Map Control* -> MockBase
-    g_objects[h] = std::unique_ptr<MockBase>( b );
+    // Save in map using control_handle as key
+    control_handle h = reinterpret_cast<control_handle>(client);
+    g_objects[h] = std::unique_ptr<MockBase>(b);
 
     logf("[Mock] CreateControl parent_handle=%p parentWidget=%p", parent, parentWidget);
 
-    return h;  // return Control*
+    return h;
 }
 
 control_handle ControlContext::GetControlWindow(const_control_handle handle)
@@ -308,20 +328,21 @@ control_handle ControlContext::GetControlWindow(const_control_handle handle)
 // =============================================================
 //  Sizer Creation
 // =============================================================
-sizer_handle SizerContext::CreateSizer(api_handle module,  api_bool vertical)
+
+sizer_handle SizerContext::CreateSizer( api_handle module, api_bool vertical )
 {
     auto* b = new MockBase();
-    b->isSizer = true;
+    b->isSizer      = true;
     b->moduleHandle = module;
 
     b->layout = vertical
-        ? static_cast<QBoxLayout*>(new QVBoxLayout())
-        : static_cast<QBoxLayout*>(new QHBoxLayout());
+        ? static_cast<QBoxLayout*>( new QVBoxLayout() )
+        : static_cast<QBoxLayout*>( new QHBoxLayout() );
 
-    sizer_handle h = reinterpret_cast<sizer_handle>(b);
-    g_objects[h] = std::unique_ptr<MockBase>(b);
+    sizer_handle h = reinterpret_cast<sizer_handle>( b );
+    g_objects[h]   = std::unique_ptr<MockBase>( b );
 
-    logf("[Mock] CreateSizer vertical=%d handle=%p", vertical, h);
+    logf( "[Mock] CreateSizer vertical=%d handle=%p", vertical, h );
     return h;
 }
 
@@ -333,34 +354,28 @@ control_handle ControlContext::CreateControl(
     api_handle module,
     api_handle client,
     control_handle parent,
-    uint32 flags
-)
+    uint32 flags )
 {
+    // client is actually pcl::Control* 
+    control_handle pclCtrl = reinterpret_cast<control_handle>(client);
+
     MockBase* b = new MockBase();
     b->isSizer = false;
-    
-    // FIX: Determine parent properly
-    QWidget* parentWidget = nullptr;
-    if (parent) {
-        MockBase* p = get(parent);
-        if (p && !p->isSizer && p->widget) {
-            parentWidget = p->widget;
-        } else if (p && p->isSizer && p->layout) {
-            parentWidget = p->layout->parentWidget();
-        }
-    }
-    
-    // Use actual parent, not always nullptr!
-    b->widget = new QWidget(parentWidget);
-    
-    // Only track true top-levels
-    if (parent == nullptr) {
-        g_topLevelWidgets.append(b);
-    }
-    
-    return (control_handle)b;
+    b->moduleHandle = module;
+
+    // RECORD backward mapping
+    b->pcl_handle = pclCtrl;
+
+    b->widget = new QWidget(nullptr);
+
+    // STORE FOR LATER USE
+    g_objects[pclCtrl] = std::unique_ptr<MockBase>(b);
+
+    // Return the new PCL "handle"
+    // This gets checked for non-null
+    return pclCtrl;
 }
-  
+
 control_handle LabelContext::CreateLabel( api_handle m, api_handle c, const char16_type*, control_handle parent, uint32 flags)
 {
     return reinterpret_cast<label_handle>(
@@ -399,53 +414,97 @@ control_handle (SpinBoxContext::CreateSpinBox)( api_handle module, api_handle cl
 // =============================================================
 //  Sizer Insertion
 // =============================================================
-void (SizerContext::InsertSizerControl)( sizer_handle s, int32 index, control_handle c, int32 stretch, int32 flags )
+
+void SizerContext::InsertSizerControl(
+    sizer_handle s, int32 index, control_handle c, int32 stretch, int32 /*flags*/)
 {
+    logf("[Mock][Sizer] InsertControl: parent=%p child=%p", s, c);
     MockBase* S = get(s);
     MockBase* C = get(c);
-    if (!S || !S->isSizer || !C || !C->widget)
+    if (!S || !C || !S->isSizer || !C->widget)
         return;
 
-    if (index < 0) index = S->layout->count();
-    S->layout->insertWidget(index, C->widget, stretch);
+    QBoxLayout* layout = S->layout;   // or your existing QBoxLayout* field
+    if (!layout)
+        return;
+
+    if (index < 0)
+        layout->addWidget(C->widget, stretch);
+    else
+        layout->insertWidget(index, C->widget, stretch);
 }
 
-void           (SizerContext::InsertSizer)( sizer_handle s, int32 index, sizer_handle child, int32 stretch)
+void SizerContext::InsertSizer(
+    sizer_handle s, int32 index, sizer_handle child, int32 stretch)
 {
+    logf("[Mock][Sizer] InsertSizer: parent=%p child=%p", s, child);
+ 
     MockBase* S = get(s);
     MockBase* C = get(child);
     if (!S || !C || !S->isSizer || !C->isSizer)
         return;
 
-    // PROPER FIX:
-    // Nest layouts by putting the child layout inside a dummy item
-    // that Qt understands as a nested layout (not a QWidget).
+    QBoxLayout* parentLayout = S->layout;
+    QBoxLayout* childLayout  = C->layout;
+    if (!parentLayout || !childLayout)
+        return;
 
-    if (index < 0) index = S->layout->count();
-
-    S->layout->insertLayout(index, C->layout, stretch);
+    if (index < 0)
+        parentLayout->addLayout(childLayout, stretch);
+    else
+        parentLayout->insertLayout(index, childLayout, stretch);
 }
-  
+
 // =============================================================
 //  Attach Sizer to Control
 // =============================================================
-   void           (ControlContext::SetControlSizer)( control_handle ctrl, sizer_handle s)
+
+void (ControlContext::SetControlSizer)( control_handle ctrl, sizer_handle s )
 {
-    MockBase* C = get(ctrl);
-    MockBase* S = get(s);
+    MockBase* C = get( ctrl );
+    MockBase* S = get( s );
 
-    if (!C || !C->widget || !S || !S->isSizer)
-        return ;
+    if ( !S || !S->isSizer || !S->layout )
+    {
+        logf("[Mock][SetControlSizer] invalid sizer: ctrl=%p sizer=%p", ctrl, s);
+        return;
+    }
 
-    // Wrap sizer layout inside the control's widget
+    // If there is no MockBase for ctrl yet, create one.
+    if ( !C )
+    {
+        C = new MockBase();
+        C->isSizer      = false;
+        C->moduleHandle = nullptr;
+        C->widget       = nullptr;
+        C->layout       = nullptr;
+        g_objects[ ctrl ] = std::unique_ptr<MockBase>( C );
+    }
+
+    // If this "control" has no widget, treat it as a top-level window.
+    if ( !C->widget )
+    {
+        C->widget = new QWidget( nullptr );
+        C->widget->setObjectName( "MockTopLevelWindow" );
+        g_topLevelWidgets.append( C );
+
+        logf("[Mock][SetControlSizer] created top-level container for ctrl=%p widget=%p",
+             ctrl, C->widget );
+    }
+
     QWidget* container = C->widget;
-    container->setLayout(S->layout);
+    QLayout* layout    = S->layout;
 
-    // RECORD the window root for children
-    S->layout->setParent(container);
+    logf("[Mock][SetControlSizer] ctrl=%p widget=%p sizer=%p layout=%p",
+         ctrl, container, s, layout );
 
+    container->setLayout( layout );
+    layout->setParent( container );
+
+    logf("[Mock][SetControlSizer] attached layout to container: layout parent=%p",
+         layout->parent() );
 }
-  
+
 // =============================================================
 //  Visibility
 // =============================================================
@@ -991,22 +1050,23 @@ api_bool ButtonContext::SetButtonReleaseEventRoutine(control_handle h,
 
 api_bool ButtonContext::SetButtonClickEventRoutine(
     control_handle h,
-    api_handle /* */,
+    api_handle receiver,
     pcl::button_click_event_routine r)
 {
     if (auto* b = get(h))
     {
+      b->eventReceiver = reinterpret_cast<control_handle>(receiver);
         b->onButtonClick = r;
         if (auto* w = widgetFromHandle(h))
         {
-            if (auto* pb = qobject_cast<QAbstractButton*>(w))
+	  if (auto* pb = qobject_cast<QAbstractButton*>(w)) if (b->pcl_handle)
             {
                 QObject::connect(pb, &QAbstractButton::clicked, [b](bool checked){
                     if (b->onButtonClick)
                     {
                         b->onButtonClick(
-                            reinterpret_cast<control_handle>(b),
-                            reinterpret_cast<control_handle>(b),
+                            b->pcl_handle,
+                            b->eventReceiver,
                             checked ? api_true : api_false);
                     }
                 });

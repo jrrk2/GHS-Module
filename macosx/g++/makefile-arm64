@@ -112,7 +112,7 @@ DEP_FILES= \
 -include $(DEP_FILES)
 
 $(OBJ_DIR)/${MAIN}: $(OBJ_FILES)
-	clang++ -g -O0 -arch arm64 -fsanitize=address -fPIC -headerpad_max_install_names -Wl,-syslibroot,/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mmacosx-version-min=15 -stdlib=libc++ -Wl,-dead_strip -L"$(PCLLIBDIR64)" -o $@ $(OBJ_FILES) -framework AppKit -lpthread -lPCL-pxi -L$(PCLSRCDIR)/modules/file-formats/XISF/macosx/g++/arm64/Release -lXISF-pxm -L$(PCLSRCDIR)/modules/file-formats/FITS/macosx/g++/arm64/Release -L$(PCLSRCDIR)/3rdparty/RFC6234/macosx/g++/arm64/Release -lFITS-pxm -lz -L/opt/homebrew/lib -lfftw3 -lfftw3_threads -lRFC6234-pxi -lzstd -llz4 -llcms2 -F/opt/homebrew/Cellar/qt@5/5.15.17_1/lib -framework QtCore -framework QtWidgets -framework QtGui -framework QtSvg # -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi -Wl,-undefined,warning
+	clang++ -g -O0 -arch arm64 -fsanitize=address -fPIC -headerpad_max_install_names -Wl,-syslibroot,/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mmacosx-version-min=15 -stdlib=libc++ -Wl,-dead_strip -L"$(PCLLIBDIR64)" -o $@ $(OBJ_FILES) -framework AppKit -lpthread -lPCL-pxi -L$(PCLSRCDIR)/modules/file-formats/XISF/macosx/g++/arm64/Release -lXISF-pxm -L$(PCLSRCDIR)/modules/file-formats/FITS/macosx/g++/arm64/Release -L$(PCLSRCDIR)/3rdparty/RFC6234/macosx/g++/arm64/Release -lFITS-pxm -lz -L/opt/homebrew/lib -lfftw3 -lfftw3_threads -lRFC6234-pxi -lzstd -llz4 -llcms2 -F/opt/homebrew/Cellar/qt@5/5.15.17_1/lib -framework QtCore -framework QtWidgets -framework QtGui -framework QtSvg # -llz4-pxi -lzstd-pxi -lzlib-pxi -lRFC6234-pxi -llcms-pxi -lcminpack-pxi
 
 .PHONY: clean
 clean:

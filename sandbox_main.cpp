@@ -241,6 +241,17 @@ int main(int argc, char** argv)
     Module = new SandboxModule;
     SandboxProcess proc;
     SandboxInterface iface;
+    MockBase* interfaceRoot = new MockBase();
+    interfaceRoot->isSizer = false;
+    interfaceRoot->widget = new QWidget(nullptr);  // True top-level
+    interfaceRoot->widget->setWindowTitle("SandboxInterface Mock");
+    
+    // Add to top-level list
+    g_topLevelWidgets.append(interfaceRoot);
+    
+    // Set the interface's handle (simulate what PixInsight core does)
+    // This is what InterfaceDispatcher::Initialize() does:
+    iface.handle = (control_handle)interfaceRoot;
 
     bool dynamic = false;
     unsigned flags = 0;
@@ -296,6 +307,6 @@ int main(int argc, char** argv)
     // Show reconstructed interface
     reconstructed->show();
     
-    return app.exec();
     */
+    return app.exec();
 }
